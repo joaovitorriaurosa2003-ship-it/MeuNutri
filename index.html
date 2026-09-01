@@ -1,0 +1,870 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>MeuNutri | Kaluf & Gomes</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --navy:#0A1F35;
+    --navy-2:#12314f;
+    --gold:#B8976A;
+    --gold-2:#d4b585;
+    --paper:#F7F5F1;
+    --ink:#1c2530;
+    --line:#e3ddd2;
+    --good:#5c7a52;
+    --warn:#b3612c;
+    --bad:#a13d3d;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:'Inter',system-ui,sans-serif;}
+  .serif{font-family:'Fraunces',serif;}
+  ::-webkit-scrollbar{width:8px;height:8px;}
+  ::-webkit-scrollbar-thumb{background:#d8d0c0;border-radius:4px;}
+  .kg-card{background:#fff;border:1px solid var(--line);border-radius:10px;}
+  .kg-input{border:1px solid #d7d0c2;border-radius:7px;padding:8px 10px;font-size:14px;background:#fff;width:100%;}
+  .kg-input:focus{outline:2px solid var(--gold);outline-offset:0;border-color:var(--gold);}
+  .kg-btn{background:var(--navy);color:#fff;border-radius:7px;padding:9px 16px;font-size:14px;font-weight:600;transition:background .15s;}
+  .kg-btn:hover{background:var(--navy-2);}
+  .kg-btn-gold{background:var(--gold);color:var(--navy);border-radius:7px;padding:9px 16px;font-size:14px;font-weight:700;transition:background .15s;}
+  .kg-btn-gold:hover{background:var(--gold-2);}
+  .kg-btn-ghost{background:transparent;color:var(--navy);border:1px solid var(--line);border-radius:7px;padding:8px 14px;font-size:13px;font-weight:600;}
+  .kg-btn-ghost:hover{background:#f1ede4;}
+  .kg-tab{padding:10px 4px;font-size:14px;font-weight:600;color:#8b8272;border-bottom:2px solid transparent;cursor:pointer;white-space:nowrap;}
+  .kg-tab.active{color:var(--navy);border-bottom-color:var(--gold);}
+  .kg-badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;letter-spacing:.02em;}
+  table.kg-table{width:100%;border-collapse:collapse;font-size:13px;}
+  table.kg-table th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#8b8272;font-weight:700;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap;}
+  table.kg-table td{padding:9px 10px;border-bottom:1px solid #efeae0;vertical-align:top;}
+  table.kg-table tr:hover td{background:#faf8f4;}
+  .fade-in{animation:fadein .18s ease;}
+  @keyframes fadein{from{opacity:0;transform:translateY(3px);}to{opacity:1;transform:none;}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const {useState,useEffect,useMemo,useRef,useCallback} = React;
+
+/* ======================================================================
+   FIREBASE CONFIG
+   Troque pelos dados do seu projeto Firebase (pode ser um projeto novo
+   "meunutri-xxxx" ou uma nova coleção dentro de um projeto que você já
+   usa, como o do MeuPsi). Depois disso é só habilitar Firestore no
+   console e o app já persiste tudo sozinho.
+====================================================================== */
+const firebaseConfig = {
+  apiKey: "SUA_API_KEY",
+  authDomain: "SEU_PROJETO.firebaseapp.com",
+  projectId: "SEU_PROJETO",
+  storageBucket: "SEU_PROJETO.appspot.com",
+  messagingSenderId: "SEU_SENDER_ID",
+  appId: "SEU_APP_ID"
+};
+
+let db = null;
+let firebaseOk = false;
+try {
+  if (firebaseConfig.apiKey !== "SUA_API_KEY") {
+    firebase.initializeApp(firebaseConfig);
+    db = firebase.firestore();
+    firebaseOk = true;
+  }
+} catch (e) { console.warn("Firebase não inicializado:", e); }
+
+/* ======================================================================
+   CONSTANTES
+====================================================================== */
+const CATEGORIAS_PRODUTO = [
+  "Mercado / Mercearia",
+  "Hortifruti - Frutas",
+  "Hortifruti - Verduras e Legumes",
+  "Folhas",
+  "Açougue / Proteínas",
+  "Laticínios",
+  "Padaria",
+  "Limpeza",
+  "Descartáveis",
+  "Outros"
+];
+
+const UNIDADES_COMPRA = [
+  {v:"kg", label:"kg"},
+  {v:"g", label:"g"},
+  {v:"L", label:"L"},
+  {v:"ml", label:"ml"},
+  {v:"un", label:"unidade"}
+];
+
+const CATEGORIAS_FICHA = [
+  "Prato principal", "Guarnição", "Salada", "Sopa", "Molho",
+  "Sobremesa", "Lanche", "Café da manhã", "Bebida", "Base / Preparo intermediário"
+];
+
+const NUTRIENTES_MACRO = [
+  {k:"energy_kcal", label:"Energia", unit:"kcal", dec:0},
+  {k:"protein_g", label:"Proteína", unit:"g", dec:1},
+  {k:"carbohydrate_g", label:"Carboidrato", unit:"g", dec:1},
+  {k:"lipid_g", label:"Lipídeo", unit:"g", dec:1},
+  {k:"fiber_g", label:"Fibra", unit:"g", dec:1},
+];
+
+const NUTRIENTES_MICRO = [
+  {k:"sodium_mg", label:"Sódio", unit:"mg", dec:0},
+  {k:"calcium_mg", label:"Cálcio", unit:"mg", dec:0},
+  {k:"iron_mg", label:"Ferro", unit:"mg", dec:1},
+  {k:"potassium_mg", label:"Potássio", unit:"mg", dec:0},
+  {k:"magnesium_mg", label:"Magnésio", unit:"mg", dec:0},
+  {k:"zinc_mg", label:"Zinco", unit:"mg", dec:1},
+  {k:"vitaminC_mg", label:"Vitamina C", unit:"mg", dec:1},
+  {k:"saturated_g", label:"Gordura saturada", unit:"g", dec:1},
+];
+
+const TODOS_NUTRIENTES = [...NUTRIENTES_MACRO, ...NUTRIENTES_MICRO];
+
+function fmt(n, dec=1){
+  if (n===null||n===undefined||isNaN(n)) return "—";
+  return n.toLocaleString("pt-BR", {minimumFractionDigits:dec, maximumFractionDigits:dec});
+}
+function brl(n){
+  if (n===null||n===undefined||isNaN(n)) return "—";
+  return n.toLocaleString("pt-BR", {style:"currency", currency:"BRL"});
+}
+function uid(){ return Math.random().toString(36).slice(2,10) + Date.now().toString(36); }
+
+/* ======================================================================
+   CÁLCULOS
+====================================================================== */
+// converte uma quantidade+unidade de uso (na ficha técnica) para gramas
+function paraGramas(quantidade, unidade, produto){
+  const q = parseFloat(quantidade)||0;
+  switch(unidade){
+    case "kg": return q*1000;
+    case "g": return q;
+    case "L": return q*1000; // aprox. densidade 1
+    case "ml": return q;
+    case "un": return q*(parseFloat(produto?.pesoUnitario)||0);
+    default: return q;
+  }
+}
+
+// custo por grama do produto, já considerando fator de correção (perda)
+function custoPorGrama(produto){
+  if (!produto) return 0;
+  const preco = parseFloat(produto.precoCompra)||0;
+  let base = 0;
+  switch(produto.unidadeCompra){
+    case "kg": base = preco/1000; break;
+    case "g": base = preco; break;
+    case "L": base = preco/1000; break;
+    case "ml": base = preco; break;
+    case "un": base = preco/(parseFloat(produto.pesoUnitario)||1); break;
+    default: base = 0;
+  }
+  const fc = parseFloat(produto.fatorCorrecao);
+  const fator = (fc && fc>0) ? fc/100 : 1;
+  return base/fator;
+}
+
+// dados nutricionais (por 1g) de um produto, olhando o alimento TACO vinculado
+function nutrientesPorGrama(produto, tacoIndex, customIndex){
+  if (!produto) return null;
+  let fonte = null;
+  if (produto.tacoId){
+    fonte = tacoIndex[produto.tacoId];
+  } else if (produto.customId){
+    fonte = customIndex[produto.customId];
+  }
+  if (!fonte) return null;
+  const out = {};
+  TODOS_NUTRIENTES.forEach(n=>{
+    const v = fonte[n.k];
+    out[n.k] = (v===null||v===undefined) ? null : v/100;
+  });
+  return out;
+}
+
+function calcularFicha(ficha, produtosIndex, tacoIndex, customIndex){
+  let custoTotal = 0;
+  const nutriTotal = {};
+  TODOS_NUTRIENTES.forEach(n=> nutriTotal[n.k] = {soma:0, temDado:false});
+  let pesoTotalG = 0;
+
+  (ficha.ingredientes||[]).forEach(ing=>{
+    const produto = produtosIndex[ing.produtoId];
+    if (!produto) return;
+    const gramas = paraGramas(ing.quantidade, ing.unidade, produto);
+    pesoTotalG += gramas;
+    custoTotal += custoPorGrama(produto)*gramas;
+    const npg = nutrientesPorGrama(produto, tacoIndex, customIndex);
+    if (npg){
+      TODOS_NUTRIENTES.forEach(n=>{
+        if (npg[n.k]!==null){
+          nutriTotal[n.k].soma += npg[n.k]*gramas;
+          nutriTotal[n.k].temDado = true;
+        }
+      });
+    }
+  });
+
+  const porcoes = parseFloat(ficha.rendimentoPorcoes)||1;
+  const custoPorcao = custoTotal/porcoes;
+  const nutriPorcao = {};
+  TODOS_NUTRIENTES.forEach(n=>{
+    nutriPorcao[n.k] = nutriTotal[n.k].temDado ? nutriTotal[n.k].soma/porcoes : null;
+  });
+
+  return {custoTotal, custoPorcao, nutriPorcao, pesoTotalG, pesoPorcaoG: pesoTotalG/porcoes};
+}
+
+/* ======================================================================
+   APP
+====================================================================== */
+function App(){
+  const [tab, setTab] = useState("dashboard");
+  const [tacoData, setTacoData] = useState([]);
+  const [produtos, setProdutos] = useState([]);
+  const [customFoods, setCustomFoods] = useState([]);
+  const [fichas, setFichas] = useState([]);
+  const [loadingTaco, setLoadingTaco] = useState(true);
+
+  // carrega base TACO estática (mesmo diretório do app)
+  useEffect(()=>{
+    fetch("./taco-data.json").then(r=>r.json()).then(d=>{
+      setTacoData(d); setLoadingTaco(false);
+    }).catch(e=>{
+      console.error("Erro carregando taco-data.json", e);
+      setLoadingTaco(false);
+    });
+  },[]);
+
+  // Firestore listeners (com fallback em memória se Firebase não configurado)
+  useEffect(()=>{
+    if (!firebaseOk) return;
+    const u1 = db.collection("produtos").onSnapshot(snap=>{
+      setProdutos(snap.docs.map(d=>({id:d.id, ...d.data()})));
+    });
+    const u2 = db.collection("fichasTecnicas").onSnapshot(snap=>{
+      setFichas(snap.docs.map(d=>({id:d.id, ...d.data()})));
+    });
+    const u3 = db.collection("alimentosCustom").onSnapshot(snap=>{
+      setCustomFoods(snap.docs.map(d=>({id:d.id, ...d.data()})));
+    });
+    return ()=>{u1();u2();u3();};
+  },[]);
+
+  const tacoIndex = useMemo(()=>{
+    const idx = {}; tacoData.forEach(t=>idx[t.id]=t); return idx;
+  },[tacoData]);
+  const customIndex = useMemo(()=>{
+    const idx = {}; customFoods.forEach(t=>idx[t.id]=t); return idx;
+  },[customFoods]);
+  const produtosIndex = useMemo(()=>{
+    const idx = {}; produtos.forEach(p=>idx[p.id]=p); return idx;
+  },[produtos]);
+
+  // ---- persistência (Firestore ou memória local) ----
+  const salvarProduto = async (produto)=>{
+    if (firebaseOk){
+      if (produto.id){
+        const {id, ...rest} = produto;
+        await db.collection("produtos").doc(id).set(rest);
+      } else {
+        await db.collection("produtos").add(produto);
+      }
+    } else {
+      setProdutos(prev=>{
+        if (produto.id) return prev.map(p=>p.id===produto.id?produto:p);
+        return [...prev, {...produto, id:uid()}];
+      });
+    }
+  };
+  const excluirProduto = async (id)=>{
+    if (firebaseOk){ await db.collection("produtos").doc(id).delete(); }
+    else { setProdutos(prev=>prev.filter(p=>p.id!==id)); }
+  };
+
+  const salvarFicha = async (ficha)=>{
+    if (firebaseOk){
+      if (ficha.id){
+        const {id, ...rest} = ficha;
+        await db.collection("fichasTecnicas").doc(id).set(rest);
+      } else {
+        await db.collection("fichasTecnicas").add(ficha);
+      }
+    } else {
+      setFichas(prev=>{
+        if (ficha.id) return prev.map(f=>f.id===ficha.id?ficha:f);
+        return [...prev, {...ficha, id:uid()}];
+      });
+    }
+  };
+  const excluirFicha = async (id)=>{
+    if (firebaseOk){ await db.collection("fichasTecnicas").doc(id).delete(); }
+    else { setFichas(prev=>prev.filter(f=>f.id!==id)); }
+  };
+
+  const salvarCustomFood = async (food)=>{
+    if (firebaseOk){
+      if (food.id){ const {id,...rest}=food; await db.collection("alimentosCustom").doc(id).set(rest); }
+      else { await db.collection("alimentosCustom").add(food); }
+    } else {
+      setCustomFoods(prev=>{
+        if (food.id) return prev.map(f=>f.id===food.id?food:f);
+        return [...prev, {...food, id:uid()}];
+      });
+    }
+  };
+  const excluirCustomFood = async (id)=>{
+    if (firebaseOk){ await db.collection("alimentosCustom").doc(id).delete(); }
+    else { setCustomFoods(prev=>prev.filter(f=>f.id!==id)); }
+  };
+
+  const TABS = [
+    {k:"dashboard", label:"Painel"},
+    {k:"alimentos", label:"Base de Alimentos"},
+    {k:"produtos", label:"Produtos & Custos"},
+    {k:"fichas", label:"Fichas Técnicas"},
+  ];
+
+  return (
+    <div className="min-h-screen">
+      <header style={{background:"var(--navy)"}} className="text-white">
+        <div className="max-w-7xl mx-auto px-5 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div style={{background:"var(--gold)"}} className="w-9 h-9 rounded-full flex items-center justify-center">
+              <span style={{color:"var(--navy)"}} className="font-bold text-sm serif">K&G</span>
+            </div>
+            <div>
+              <div className="serif text-lg leading-none" style={{color:"var(--gold-2)"}}>MeuNutri</div>
+              <div className="text-[11px] text-white/50 tracking-wide">Kaluf & Gomes Soluções Empresariais</div>
+            </div>
+          </div>
+          {!firebaseOk && (
+            <div className="text-[11px] px-3 py-1.5 rounded-full bg-white/10 text-white/70">
+              Modo local — configure o Firebase para persistir os dados
+            </div>
+          )}
+        </div>
+        <div className="max-w-7xl mx-auto px-5 flex gap-6 border-t border-white/10">
+          {TABS.map(t=>(
+            <div key={t.k}
+              onClick={()=>setTab(t.k)}
+              className={"kg-tab " + (tab===t.k ? "active":"")}
+              style={tab===t.k ? {color:"#fff", borderBottomColor:"var(--gold)"} : {color:"rgba(255,255,255,.55)"}}>
+              {t.label}
+            </div>
+          ))}
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto px-5 py-6">
+        {tab==="dashboard" && <Dashboard produtos={produtos} fichas={fichas} tacoData={tacoData} loadingTaco={loadingTaco} produtosIndex={produtosIndex} tacoIndex={tacoIndex} customIndex={customIndex} setTab={setTab} />}
+        {tab==="alimentos" && <BaseAlimentos tacoData={tacoData} loadingTaco={loadingTaco} customFoods={customFoods} salvarCustomFood={salvarCustomFood} excluirCustomFood={excluirCustomFood} />}
+        {tab==="produtos" && <Produtos produtos={produtos} tacoData={tacoData} customFoods={customFoods} salvarProduto={salvarProduto} excluirProduto={excluirProduto} />}
+        {tab==="fichas" && <FichasTecnicas fichas={fichas} produtos={produtos} tacoIndex={tacoIndex} customIndex={customIndex} produtosIndex={produtosIndex} salvarFicha={salvarFicha} excluirFicha={excluirFicha} />}
+      </main>
+    </div>
+  );
+}
+
+/* ======================================================================
+   DASHBOARD
+====================================================================== */
+function Dashboard({produtos, fichas, tacoData, loadingTaco, produtosIndex, tacoIndex, customIndex, setTab}){
+  const custoMedioPorcao = useMemo(()=>{
+    if (!fichas.length) return null;
+    const vals = fichas.map(f=>calcularFicha(f, produtosIndex, tacoIndex, customIndex).custoPorcao);
+    return vals.reduce((a,b)=>a+b,0)/vals.length;
+  },[fichas, produtosIndex, tacoIndex, customIndex]);
+
+  const stats = [
+    {label:"Alimentos na base TACO", value: loadingTaco?"…":tacoData.length, hint:"4ª edição, NEPA/UNICAMP"},
+    {label:"Produtos cadastrados", value: produtos.length, hint:"insumos com custo e vínculo nutricional"},
+    {label:"Fichas técnicas", value: fichas.length, hint:"preparações prontas para uso"},
+    {label:"Custo médio por porção", value: custoMedioPorcao!=null ? brl(custoMedioPorcao) : "—", hint:"média de todas as fichas"},
+  ];
+
+  return (
+    <div className="fade-in space-y-6">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {stats.map((s,i)=>(
+          <div key={i} className="kg-card p-4">
+            <div className="text-2xl serif" style={{color:"var(--navy)"}}>{s.value}</div>
+            <div className="text-sm font-semibold mt-1">{s.label}</div>
+            <div className="text-xs text-stone-500 mt-0.5">{s.hint}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-4">
+        <div className="kg-card p-5">
+          <div className="font-semibold mb-3">Próximos passos deste sistema</div>
+          <ul className="text-sm space-y-2 text-stone-700">
+            <li>✅ Base de alimentos TACO (macro + micronutrientes)</li>
+            <li>✅ Cadastro de produtos com custo real e fator de correção</li>
+            <li>✅ Fichas técnicas com custo e nutrição calculados automaticamente</li>
+            <li className="text-stone-400">◻ Cardápio semanal (soma de CHO/PTN/LIP por dia)</li>
+            <li className="text-stone-400">◻ Lista de compras por categoria</li>
+            <li className="text-stone-400">◻ Pasta sanitária</li>
+          </ul>
+        </div>
+        <div className="kg-card p-5">
+          <div className="font-semibold mb-3">Fichas técnicas recentes</div>
+          {fichas.length===0 ? (
+            <div className="text-sm text-stone-500">Nenhuma ficha cadastrada ainda. <span className="underline cursor-pointer" onClick={()=>setTab("fichas")}>Criar a primeira</span>.</div>
+          ) : (
+            <div className="space-y-2">
+              {fichas.slice(-5).reverse().map(f=>{
+                const calc = calcularFicha(f, produtosIndex, tacoIndex, customIndex);
+                return (
+                  <div key={f.id} className="flex items-center justify-between text-sm border-b border-stone-100 pb-2">
+                    <span>{f.nome}</span>
+                    <span className="text-stone-500">{brl(calc.custoPorcao)}/porção · {fmt(calc.nutriPorcao.energy_kcal,0)} kcal</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ======================================================================
+   BASE DE ALIMENTOS (TACO + customizados)
+====================================================================== */
+function BaseAlimentos({tacoData, loadingTaco, customFoods, salvarCustomFood, excluirCustomFood}){
+  const [busca, setBusca] = useState("");
+  const [categoria, setCategoria] = useState("Todas");
+  const [selecionado, setSelecionado] = useState(null);
+  const [modoCustom, setModoCustom] = useState(false);
+
+  const categorias = useMemo(()=>{
+    const s = new Set(tacoData.map(t=>t.categoria));
+    return ["Todas", ...Array.from(s).sort()];
+  },[tacoData]);
+
+  const listaCompleta = useMemo(()=>{
+    const custom = customFoods.map(c=>({...c, custom:true}));
+    return [...tacoData, ...custom];
+  },[tacoData, customFoods]);
+
+  const filtrados = useMemo(()=>{
+    let out = listaCompleta;
+    if (categoria!=="Todas") out = out.filter(t=>t.categoria===categoria);
+    if (busca.trim()){
+      const b = busca.toLowerCase();
+      out = out.filter(t=>t.nome.toLowerCase().includes(b));
+    }
+    return out.slice(0,200);
+  },[listaCompleta, busca, categoria]);
+
+  return (
+    <div className="fade-in grid lg:grid-cols-5 gap-5">
+      <div className="lg:col-span-3 kg-card p-4">
+        <div className="flex flex-wrap gap-2 mb-3">
+          <input className="kg-input flex-1 min-w-[200px]" placeholder="Buscar alimento (ex: arroz, frango, alface)..."
+            value={busca} onChange={e=>setBusca(e.target.value)} />
+          <select className="kg-input w-auto" value={categoria} onChange={e=>setCategoria(e.target.value)}>
+            {categorias.map(c=><option key={c} value={c}>{c}</option>)}
+          </select>
+          <button className="kg-btn-gold" onClick={()=>{setModoCustom(true); setSelecionado(null);}}>+ Alimento customizado</button>
+        </div>
+        {loadingTaco ? (
+          <div className="text-sm text-stone-500 p-6 text-center">Carregando base TACO...</div>
+        ) : (
+          <div className="max-h-[65vh] overflow-y-auto">
+            <table className="kg-table">
+              <thead><tr><th>Alimento</th><th>Categoria</th><th>kcal/100g</th><th></th></tr></thead>
+              <tbody>
+                {filtrados.map(t=>(
+                  <tr key={(t.custom?"c":"t")+t.id} onClick={()=>{setSelecionado(t); setModoCustom(false);}} className="cursor-pointer">
+                    <td className="font-medium">{t.nome}{t.custom && <span className="kg-badge ml-2" style={{background:"#eee6d8",color:"var(--navy)"}}>custom</span>}</td>
+                    <td className="text-stone-500">{t.categoria}</td>
+                    <td>{fmt(t.energy_kcal,0)}</td>
+                    <td className="text-right">{t.custom && <button className="text-xs text-red-600" onClick={(e)=>{e.stopPropagation(); excluirCustomFood(t.id);}}>excluir</button>}</td>
+                  </tr>
+                ))}
+                {filtrados.length===0 && <tr><td colSpan="4" className="text-center text-stone-400 py-6">Nenhum alimento encontrado.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="lg:col-span-2">
+        {modoCustom ? (
+          <FormAlimentoCustom onSalvar={(f)=>{salvarCustomFood(f); setModoCustom(false);}} onCancelar={()=>setModoCustom(false)} />
+        ) : selecionado ? (
+          <FichaNutricional alimento={selecionado} />
+        ) : (
+          <div className="kg-card p-6 text-sm text-stone-500">Selecione um alimento na lista para ver a composição nutricional completa (macro e micronutrientes por 100g).</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FichaNutricional({alimento}){
+  return (
+    <div className="kg-card p-5 fade-in">
+      <div className="text-xs uppercase tracking-wide text-stone-400 mb-1">{alimento.categoria}</div>
+      <div className="serif text-lg mb-4" style={{color:"var(--navy)"}}>{alimento.nome}</div>
+      <div className="text-xs font-semibold text-stone-500 mb-2">MACRONUTRIENTES (por 100g)</div>
+      <div className="grid grid-cols-2 gap-2 mb-4">
+        {NUTRIENTES_MACRO.map(n=>(
+          <div key={n.k} className="bg-stone-50 rounded-lg px-3 py-2">
+            <div className="text-[11px] text-stone-500">{n.label}</div>
+            <div className="font-semibold">{fmt(alimento[n.k], n.dec)} {n.unit}</div>
+          </div>
+        ))}
+      </div>
+      <div className="text-xs font-semibold text-stone-500 mb-2">MICRONUTRIENTES (por 100g)</div>
+      <div className="grid grid-cols-2 gap-2">
+        {NUTRIENTES_MICRO.map(n=>(
+          <div key={n.k} className="bg-stone-50 rounded-lg px-3 py-2">
+            <div className="text-[11px] text-stone-500">{n.label}</div>
+            <div className="font-semibold">{fmt(alimento[n.k], n.dec)} {n.unit}</div>
+          </div>
+        ))}
+      </div>
+      {alimento.humidity_percents!=null && <div className="text-xs text-stone-400 mt-3">Umidade: {fmt(alimento.humidity_percents,1)}%</div>}
+    </div>
+  );
+}
+
+function FormAlimentoCustom({onSalvar, onCancelar}){
+  const [f, setF] = useState({nome:"", categoria:"Miscelâneas"});
+  const set = (k,v)=>setF(prev=>({...prev,[k]:v}));
+  return (
+    <div className="kg-card p-5 fade-in">
+      <div className="font-semibold mb-3">Novo alimento customizado</div>
+      <div className="space-y-2">
+        <input className="kg-input" placeholder="Nome do alimento" value={f.nome} onChange={e=>set("nome",e.target.value)} />
+        <input className="kg-input" placeholder="Categoria" value={f.categoria} onChange={e=>set("categoria",e.target.value)} />
+        <div className="text-xs font-semibold text-stone-500 pt-2">Valores por 100g</div>
+        <div className="grid grid-cols-2 gap-2">
+          {TODOS_NUTRIENTES.map(n=>(
+            <div key={n.k}>
+              <label className="text-[11px] text-stone-500">{n.label} ({n.unit})</label>
+              <input type="number" step="any" className="kg-input" value={f[n.k]||""} onChange={e=>set(n.k, e.target.value===""?null:parseFloat(e.target.value))} />
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="flex gap-2 mt-4">
+        <button className="kg-btn-gold" onClick={()=>{ if(f.nome.trim()) onSalvar(f); }}>Salvar alimento</button>
+        <button className="kg-btn-ghost" onClick={onCancelar}>Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
+/* ======================================================================
+   PRODUTOS & CUSTOS
+====================================================================== */
+function produtoVazio(){
+  return {
+    nome:"", categoria:CATEGORIAS_PRODUTO[0], unidadeCompra:"kg",
+    precoCompra:"", pesoUnitario:"", fatorCorrecao:"100",
+    tacoId:"", fornecedor:"", observacoes:""
+  };
+}
+
+function Produtos({produtos, tacoData, customFoods, salvarProduto, excluirProduto}){
+  const [editando, setEditando] = useState(null);
+  const [busca, setBusca] = useState("");
+  const [filtroCategoria, setFiltroCategoria] = useState("Todas");
+
+  const alimentosParaVinculo = useMemo(()=>{
+    return [...tacoData.map(t=>({id:t.id, nome:t.nome, tipo:"taco"})), ...customFoods.map(t=>({id:t.id, nome:t.nome, tipo:"custom"}))]
+      .sort((a,b)=>a.nome.localeCompare(b.nome));
+  },[tacoData, customFoods]);
+
+  const filtrados = useMemo(()=>{
+    let out = produtos;
+    if (filtroCategoria!=="Todas") out = out.filter(p=>p.categoria===filtroCategoria);
+    if (busca.trim()) out = out.filter(p=>p.nome.toLowerCase().includes(busca.toLowerCase()));
+    return out.sort((a,b)=>a.nome.localeCompare(b.nome));
+  },[produtos, busca, filtroCategoria]);
+
+  return (
+    <div className="fade-in grid lg:grid-cols-5 gap-5">
+      <div className="lg:col-span-3 kg-card p-4">
+        <div className="flex flex-wrap gap-2 mb-3">
+          <input className="kg-input flex-1 min-w-[180px]" placeholder="Buscar produto..." value={busca} onChange={e=>setBusca(e.target.value)} />
+          <select className="kg-input w-auto" value={filtroCategoria} onChange={e=>setFiltroCategoria(e.target.value)}>
+            <option>Todas</option>
+            {CATEGORIAS_PRODUTO.map(c=><option key={c}>{c}</option>)}
+          </select>
+          <button className="kg-btn-gold" onClick={()=>setEditando(produtoVazio())}>+ Novo produto</button>
+        </div>
+        <div className="max-h-[65vh] overflow-y-auto">
+          <table className="kg-table">
+            <thead><tr><th>Produto</th><th>Categoria</th><th>Custo/g</th><th>Vínculo TACO</th><th></th></tr></thead>
+            <tbody>
+              {filtrados.map(p=>(
+                <tr key={p.id} className="cursor-pointer" onClick={()=>setEditando(p)}>
+                  <td className="font-medium">{p.nome}</td>
+                  <td className="text-stone-500">{p.categoria}</td>
+                  <td>{brl(custoPorGrama(p))}</td>
+                  <td className="text-stone-500">{p.tacoId ? (tacoData.find(t=>t.id===parseInt(p.tacoId))?.nome || customFoods.find(c=>c.id===p.tacoId)?.nome || "—") : "—"}</td>
+                  <td className="text-right"><button className="text-xs text-red-600" onClick={(e)=>{e.stopPropagation(); if(confirm("Excluir produto "+p.nome+"?")) excluirProduto(p.id);}}>excluir</button></td>
+                </tr>
+              ))}
+              {filtrados.length===0 && <tr><td colSpan="5" className="text-center text-stone-400 py-6">Nenhum produto cadastrado.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div className="lg:col-span-2">
+        {editando ? (
+          <FormProduto produto={editando} alimentosVinculo={alimentosParaVinculo}
+            onSalvar={(p)=>{salvarProduto(p); setEditando(null);}} onCancelar={()=>setEditando(null)} />
+        ) : (
+          <div className="kg-card p-6 text-sm text-stone-500">Selecione um produto para editar, ou cadastre um novo. O custo por grama já considera unidade de compra e fator de correção (perda no preparo).</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FormProduto({produto, alimentosVinculo, onSalvar, onCancelar}){
+  const [f, setF] = useState(produto);
+  useEffect(()=>setF(produto),[produto]);
+  const set = (k,v)=>setF(prev=>({...prev,[k]:v}));
+
+  const custoG = custoPorGrama(f);
+
+  return (
+    <div className="kg-card p-5 fade-in">
+      <div className="font-semibold mb-3">{f.id ? "Editar produto" : "Novo produto"}</div>
+      <div className="space-y-2">
+        <input className="kg-input" placeholder="Nome do produto" value={f.nome} onChange={e=>set("nome",e.target.value)} />
+        <select className="kg-input" value={f.categoria} onChange={e=>set("categoria",e.target.value)}>
+          {CATEGORIAS_PRODUTO.map(c=><option key={c}>{c}</option>)}
+        </select>
+
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-[11px] text-stone-500">Unidade de compra</label>
+            <select className="kg-input" value={f.unidadeCompra} onChange={e=>set("unidadeCompra",e.target.value)}>
+              {UNIDADES_COMPRA.map(u=><option key={u.v} value={u.v}>{u.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-[11px] text-stone-500">Preço pago por essa unidade (R$)</label>
+            <input type="number" step="any" className="kg-input" value={f.precoCompra} onChange={e=>set("precoCompra",e.target.value)} />
+          </div>
+        </div>
+
+        {f.unidadeCompra==="un" && (
+          <div>
+            <label className="text-[11px] text-stone-500">Peso de 1 unidade (g)</label>
+            <input type="number" step="any" className="kg-input" value={f.pesoUnitario} onChange={e=>set("pesoUnitario",e.target.value)} />
+          </div>
+        )}
+
+        <div>
+          <label className="text-[11px] text-stone-500">Fator de correção — % aproveitável após limpeza/preparo (100 = sem perda)</label>
+          <input type="number" step="any" className="kg-input" value={f.fatorCorrecao} onChange={e=>set("fatorCorrecao",e.target.value)} />
+        </div>
+
+        <div>
+          <label className="text-[11px] text-stone-500">Vínculo nutricional (TACO ou alimento customizado)</label>
+          <select className="kg-input" value={f.tacoId||""} onChange={e=>set("tacoId", e.target.value)}>
+            <option value="">— sem vínculo (sem cálculo nutricional) —</option>
+            {alimentosVinculo.map(a=><option key={a.tipo+a.id} value={a.id}>{a.nome}{a.tipo==="custom"?" (custom)":""}</option>)}
+          </select>
+        </div>
+
+        <input className="kg-input" placeholder="Fornecedor (opcional)" value={f.fornecedor||""} onChange={e=>set("fornecedor",e.target.value)} />
+        <textarea className="kg-input" placeholder="Observações" rows="2" value={f.observacoes||""} onChange={e=>set("observacoes",e.target.value)} />
+
+        <div className="rounded-lg px-3 py-2 text-sm" style={{background:"#f1ede0"}}>
+          Custo calculado: <strong>{brl(custoG)}</strong> por grama {f.unidadeCompra==="un" && f.pesoUnitario ? `(${brl(custoG*parseFloat(f.pesoUnitario))} por unidade)` : ""}
+        </div>
+      </div>
+      <div className="flex gap-2 mt-4">
+        <button className="kg-btn-gold" onClick={()=>{ if(f.nome.trim()) onSalvar(f); }}>Salvar produto</button>
+        <button className="kg-btn-ghost" onClick={onCancelar}>Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
+/* ======================================================================
+   FICHAS TÉCNICAS
+====================================================================== */
+function fichaVazia(){
+  return {
+    nome:"", categoria:CATEGORIAS_FICHA[0], rendimentoPorcoes:"1",
+    modoPreparo:"", ingredientes:[]
+  };
+}
+
+function FichasTecnicas({fichas, produtos, tacoIndex, customIndex, produtosIndex, salvarFicha, excluirFicha}){
+  const [editando, setEditando] = useState(null);
+  const [busca, setBusca] = useState("");
+
+  const filtradas = useMemo(()=>{
+    let out = fichas;
+    if (busca.trim()) out = out.filter(f=>f.nome.toLowerCase().includes(busca.toLowerCase()));
+    return out.sort((a,b)=>a.nome.localeCompare(b.nome));
+  },[fichas, busca]);
+
+  if (editando){
+    return <FormFicha ficha={editando} produtos={produtos} tacoIndex={tacoIndex} customIndex={customIndex} produtosIndex={produtosIndex}
+      onSalvar={(f)=>{salvarFicha(f); setEditando(null);}} onCancelar={()=>setEditando(null)} />;
+  }
+
+  return (
+    <div className="fade-in kg-card p-4">
+      <div className="flex flex-wrap gap-2 mb-4">
+        <input className="kg-input flex-1 min-w-[200px]" placeholder="Buscar ficha técnica..." value={busca} onChange={e=>setBusca(e.target.value)} />
+        <button className="kg-btn-gold" onClick={()=>setEditando(fichaVazia())}>+ Nova ficha técnica</button>
+      </div>
+      <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
+        {filtradas.map(f=>{
+          const calc = calcularFicha(f, produtosIndex, tacoIndex, customIndex);
+          return (
+            <div key={f.id} className="kg-card p-4 cursor-pointer hover:shadow-sm" onClick={()=>setEditando(f)}>
+              <div className="flex items-start justify-between">
+                <div>
+                  <div className="text-[11px] uppercase tracking-wide text-stone-400">{f.categoria}</div>
+                  <div className="font-semibold serif" style={{color:"var(--navy)"}}>{f.nome}</div>
+                </div>
+                <button className="text-xs text-red-600" onClick={(e)=>{e.stopPropagation(); if(confirm("Excluir "+f.nome+"?")) excluirFicha(f.id);}}>excluir</button>
+              </div>
+              <div className="grid grid-cols-3 gap-2 mt-3 text-sm">
+                <div><div className="text-[11px] text-stone-500">Custo/porção</div><div className="font-semibold">{brl(calc.custoPorcao)}</div></div>
+                <div><div className="text-[11px] text-stone-500">Kcal/porção</div><div className="font-semibold">{fmt(calc.nutriPorcao.energy_kcal,0)}</div></div>
+                <div><div className="text-[11px] text-stone-500">Porções</div><div className="font-semibold">{f.rendimentoPorcoes}</div></div>
+              </div>
+            </div>
+          );
+        })}
+        {filtradas.length===0 && <div className="text-stone-400 text-sm py-8 col-span-3 text-center">Nenhuma ficha técnica cadastrada ainda.</div>}
+      </div>
+    </div>
+  );
+}
+
+function FormFicha({ficha, produtos, tacoIndex, customIndex, produtosIndex, onSalvar, onCancelar}){
+  const [f, setF] = useState(ficha);
+  useEffect(()=>setF(ficha),[ficha]);
+  const set = (k,v)=>setF(prev=>({...prev,[k]:v}));
+
+  const produtosOrdenados = useMemo(()=>[...produtos].sort((a,b)=>a.nome.localeCompare(b.nome)),[produtos]);
+
+  const addIngrediente = ()=> set("ingredientes", [...(f.ingredientes||[]), {id:uid(), produtoId:"", quantidade:"", unidade:"g"}]);
+  const updIngrediente = (id, patch)=> set("ingredientes", f.ingredientes.map(i=>i.id===id?{...i,...patch}:i));
+  const rmIngrediente = (id)=> set("ingredientes", f.ingredientes.filter(i=>i.id!==id));
+
+  const calc = useMemo(()=>calcularFicha(f, produtosIndex, tacoIndex, customIndex),[f, produtosIndex, tacoIndex, customIndex]);
+
+  return (
+    <div className="fade-in grid lg:grid-cols-5 gap-5">
+      <div className="lg:col-span-3 kg-card p-5">
+        <div className="font-semibold mb-3">{f.id ? "Editar ficha técnica" : "Nova ficha técnica"}</div>
+        <div className="grid grid-cols-2 gap-2 mb-2">
+          <input className="kg-input col-span-2" placeholder="Nome da preparação" value={f.nome} onChange={e=>set("nome",e.target.value)} />
+          <select className="kg-input" value={f.categoria} onChange={e=>set("categoria",e.target.value)}>
+            {CATEGORIAS_FICHA.map(c=><option key={c}>{c}</option>)}
+          </select>
+          <input type="number" step="any" className="kg-input" placeholder="Rendimento (nº de porções)" value={f.rendimentoPorcoes} onChange={e=>set("rendimentoPorcoes",e.target.value)} />
+        </div>
+        <textarea className="kg-input mb-3" placeholder="Modo de preparo" rows="3" value={f.modoPreparo||""} onChange={e=>set("modoPreparo",e.target.value)} />
+
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-xs font-semibold text-stone-500">INGREDIENTES</div>
+          <button className="kg-btn-ghost" onClick={addIngrediente}>+ ingrediente</button>
+        </div>
+        <div className="space-y-2 max-h-[40vh] overflow-y-auto pr-1">
+          {(f.ingredientes||[]).map(ing=>{
+            const produtoSel = produtosIndex[ing.produtoId];
+            const g = paraGramas(ing.quantidade, ing.unidade, produtoSel);
+            const custoIng = produtoSel ? custoPorGrama(produtoSel)*g : 0;
+            return (
+              <div key={ing.id} className="flex flex-wrap gap-1.5 items-center bg-stone-50 rounded-lg p-2">
+                <select className="kg-input flex-1 min-w-[140px]" value={ing.produtoId} onChange={e=>updIngrediente(ing.id,{produtoId:e.target.value})}>
+                  <option value="">Selecione o produto...</option>
+                  {produtosOrdenados.map(p=><option key={p.id} value={p.id}>{p.nome}</option>)}
+                </select>
+                <input type="number" step="any" className="kg-input w-20" placeholder="qtd" value={ing.quantidade} onChange={e=>updIngrediente(ing.id,{quantidade:e.target.value})} />
+                <select className="kg-input w-24" value={ing.unidade} onChange={e=>updIngrediente(ing.id,{unidade:e.target.value})}>
+                  <option value="g">g</option><option value="kg">kg</option><option value="ml">ml</option><option value="L">L</option><option value="un">un</option>
+                </select>
+                <span className="text-xs text-stone-500 w-20 text-right">{brl(custoIng)}</span>
+                <button className="text-xs text-red-600 px-1" onClick={()=>rmIngrediente(ing.id)}>×</button>
+              </div>
+            );
+          })}
+          {(f.ingredientes||[]).length===0 && <div className="text-xs text-stone-400 py-3">Nenhum ingrediente adicionado.</div>}
+        </div>
+
+        <div className="flex gap-2 mt-4">
+          <button className="kg-btn-gold" onClick={()=>{ if(f.nome.trim()) onSalvar(f); }}>Salvar ficha técnica</button>
+          <button className="kg-btn-ghost" onClick={onCancelar}>Cancelar</button>
+        </div>
+      </div>
+
+      <div className="lg:col-span-2 space-y-4">
+        <div className="kg-card p-5" style={{background:"var(--navy)"}}>
+          <div className="text-white/60 text-xs uppercase tracking-wide mb-1">Custo total da ficha</div>
+          <div className="serif text-3xl text-white mb-3">{brl(calc.custoTotal)}</div>
+          <div className="grid grid-cols-2 gap-2 text-sm">
+            <div className="bg-white/10 rounded-lg px-3 py-2">
+              <div className="text-white/50 text-[11px]">Custo por porção</div>
+              <div className="text-white font-semibold">{brl(calc.custoPorcao)}</div>
+            </div>
+            <div className="bg-white/10 rounded-lg px-3 py-2">
+              <div className="text-white/50 text-[11px]">Peso por porção</div>
+              <div className="text-white font-semibold">{fmt(calc.pesoPorcaoG,0)} g</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="kg-card p-5">
+          <div className="text-xs font-semibold text-stone-500 mb-2">MACRONUTRIENTES POR PORÇÃO</div>
+          <div className="grid grid-cols-2 gap-2 mb-4">
+            {NUTRIENTES_MACRO.map(n=>(
+              <div key={n.k} className="bg-stone-50 rounded-lg px-3 py-2">
+                <div className="text-[11px] text-stone-500">{n.label}</div>
+                <div className="font-semibold">{fmt(calc.nutriPorcao[n.k], n.dec)} {n.unit}</div>
+              </div>
+            ))}
+          </div>
+          <div className="text-xs font-semibold text-stone-500 mb-2">MICRONUTRIENTES POR PORÇÃO</div>
+          <div className="grid grid-cols-2 gap-2">
+            {NUTRIENTES_MICRO.map(n=>(
+              <div key={n.k} className="bg-stone-50 rounded-lg px-3 py-2">
+                <div className="text-[11px] text-stone-500">{n.label}</div>
+                <div className="font-semibold">{fmt(calc.nutriPorcao[n.k], n.dec)} {n.unit}</div>
+              </div>
+            ))}
+          </div>
+          <div className="text-[11px] text-stone-400 mt-3">Ingredientes sem vínculo TACO/customizado não entram no cálculo nutricional (só no custo).</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+</script>
+</body>
+</html>
