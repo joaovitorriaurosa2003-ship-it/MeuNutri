@@ -10,6 +10,7 @@
 <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -48,6 +49,14 @@
   table.kg-table tr:hover td{background:#faf8f4;}
   .fade-in{animation:fadein .18s ease;}
   @keyframes fadein{from{opacity:0;transform:translateY(3px);}to{opacity:1;transform:none;}}
+
+  #print-area{display:none;}
+  @media print{
+    body *{visibility:hidden;}
+    #print-area, #print-area *{visibility:visible;}
+    #print-area{display:block; position:absolute; top:0; left:0; width:100%; padding:20px; color:#1c2530; font-family:'Inter',system-ui,sans-serif;}
+    .no-print{display:none !important;}
+  }
 </style>
 </head>
 <body>
@@ -77,14 +86,19 @@ const firebaseConfig = {
 };
 
 let db = null;
+let auth = null;
 let firebaseOk = false;
 try {
   if (firebaseConfig.apiKey !== "SUA_API_KEY") {
     firebase.initializeApp(firebaseConfig);
     db = firebase.firestore();
+    auth = firebase.auth();
     firebaseOk = true;
   }
 } catch (e) { console.warn("Firebase não inicializado:", e); }
+
+// e-mails com acesso ao painel de administração (você). Adicione o(s) seu(s) e-mail(s) aqui.
+const ADMIN_EMAILS = ["joao@kalufgomes.com.br"];
 
 /* ======================================================================
    CONSTANTES
@@ -429,10 +443,208 @@ function cardapioDeModelo(modelo){
   };
 }
 
+// agrega todos os alimentos do cardápio (somando repetições entre refeições) numa
+// lista de compras, agrupada por categoria e já convertida para g/kg de forma legível
+function gerarListaCompras(cardapio, tacoIndex, customIndex){
+  const somaPorItem = {};
+  (cardapio.refeicoes||[]).forEach(r=>{
+    (r.itens||[]).forEach(item=>{
+      const alimento = alimentoDoItem(item, tacoIndex, customIndex);
+      if (!alimento) return;
+      const chave = item.tipo+"_"+item.itemId;
+      const g = parseFloat(item.quantidade)||0;
+      if (!somaPorItem[chave]) somaPorItem[chave] = {nome:alimento.nome, categoria:alimento.categoria||"Outros", gramas:0};
+      somaPorItem[chave].gramas += g;
+    });
+  });
+  const porCategoria = {};
+  Object.values(somaPorItem).forEach(it=>{
+    const cat = it.categoria;
+    if (!porCategoria[cat]) porCategoria[cat] = [];
+    const gramas = it.gramas;
+    const display = gramas>=1000 ? `${fmt(gramas/1000,2)} kg` : `${fmt(gramas,0)} g`;
+    porCategoria[cat].push({nome:it.nome, gramas, display});
+  });
+  return Object.entries(porCategoria)
+    .map(([categoria, itens])=>({categoria, itens: itens.sort((a,b)=>a.nome.localeCompare(b.nome))}))
+    .sort((a,b)=>a.categoria.localeCompare(b.categoria));
+}
+
 /* ======================================================================
    APP
 ====================================================================== */
 function App(){
+  const [usuario, setUsuario] = useState(null);
+  const [perfil, setPerfil] = useState(null);
+  const [carregandoAuth, setCarregandoAuth] = useState(true);
+
+  useEffect(()=>{
+    if (!firebaseOk){ setCarregandoAuth(false); return; }
+    const unsub = auth.onAuthStateChanged(async (user)=>{
+      setUsuario(user);
+      if (user){
+        try {
+          const doc = await db.collection("nutricionistas").doc(user.uid).get();
+          setPerfil(doc.exists ? doc.data() : null);
+        } catch(e){ console.error(e); setPerfil(null); }
+      } else {
+        setPerfil(null);
+      }
+      setCarregandoAuth(false);
+    });
+    return unsub;
+  },[]);
+
+  if (!firebaseOk){
+    return <div className="min-h-screen flex items-center justify-center p-6 text-center text-sm text-stone-500 max-w-sm mx-auto">
+      Este aplicativo precisa do Firebase configurado para funcionar — login e a base compartilhada entre nutricionistas exigem conexão com o banco de dados.
+    </div>;
+  }
+  if (carregandoAuth){
+    return <div className="min-h-screen flex items-center justify-center text-sm text-stone-500">Carregando...</div>;
+  }
+  if (!usuario){
+    return <Auth />;
+  }
+  if (!perfil){
+    return <CompletarPerfil usuario={usuario} onCompleto={setPerfil} />;
+  }
+
+  const isAdmin = ADMIN_EMAILS.includes(usuario.email);
+  return <AppLogado usuario={usuario} perfil={perfil} isAdmin={isAdmin} />;
+}
+
+/* ======================================================================
+   AUTENTICAÇÃO — login, cadastro de novos nutricionistas
+====================================================================== */
+function traduzErroAuth(codigo){
+  const mapa = {
+    "auth/email-already-in-use": "Esse e-mail já está cadastrado. Tente entrar.",
+    "auth/invalid-email": "E-mail inválido.",
+    "auth/weak-password": "A senha precisa ter pelo menos 6 caracteres.",
+    "auth/user-not-found": "E-mail não encontrado.",
+    "auth/wrong-password": "Senha incorreta.",
+    "auth/invalid-credential": "E-mail ou senha incorretos.",
+    "auth/too-many-requests": "Muitas tentativas. Aguarde um pouco e tente de novo.",
+  };
+  return mapa[codigo] || "Não foi possível concluir. Tente novamente.";
+}
+
+function Auth(){
+  const [modo, setModo] = useState("login"); // login | cadastro
+  const [carregando, setCarregando] = useState(false);
+  const [erro, setErro] = useState("");
+  const [mensagem, setMensagem] = useState("");
+  const [f, setF] = useState({nome:"", crn:"", email:"", senha:"", confirmarSenha:""});
+  const set = (k,v)=>setF(prev=>({...prev,[k]:v}));
+
+  const entrar = async ()=>{
+    setErro(""); setCarregando(true);
+    try {
+      await auth.signInWithEmailAndPassword(f.email.trim(), f.senha);
+    } catch(e){ setErro(traduzErroAuth(e.code)); }
+    setCarregando(false);
+  };
+
+  const cadastrar = async ()=>{
+    setErro("");
+    if (!f.nome.trim() || !f.crn.trim() || !f.email.trim() || !f.senha){ setErro("Preencha todos os campos."); return; }
+    if (f.senha !== f.confirmarSenha){ setErro("As senhas não coincidem."); return; }
+    setCarregando(true);
+    try {
+      const cred = await auth.createUserWithEmailAndPassword(f.email.trim(), f.senha);
+      await db.collection("nutricionistas").doc(cred.user.uid).set({
+        nome: f.nome.trim(), crn: f.crn.trim(), email: f.email.trim(),
+        criadoEm: new Date().toISOString()
+      });
+    } catch(e){ setErro(traduzErroAuth(e.code)); }
+    setCarregando(false);
+  };
+
+  const recuperarSenha = async ()=>{
+    setErro(""); setMensagem("");
+    if (!f.email.trim()){ setErro("Digite seu e-mail para recuperar a senha."); return; }
+    try {
+      await auth.sendPasswordResetEmail(f.email.trim());
+      setMensagem("Enviamos um link de recuperação para o seu e-mail.");
+    } catch(e){ setErro(traduzErroAuth(e.code)); }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center p-5" style={{background:"var(--navy)"}}>
+      <div className="w-full max-w-sm">
+        <div className="text-center mb-6">
+          <div style={{background:"var(--gold)"}} className="w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3">
+            <span style={{color:"var(--navy)"}} className="font-bold serif">MN</span>
+          </div>
+          <div className="serif text-2xl text-white">MeuNutri</div>
+          <div className="text-white/50 text-xs mt-1">Plataforma para nutricionistas</div>
+        </div>
+
+        <div className="kg-card p-6">
+          <div className="flex gap-4 mb-4 text-sm font-semibold border-b" style={{borderColor:"var(--line)"}}>
+            <div className={"pb-2 cursor-pointer " + (modo==="login"?"":"text-stone-400")} style={modo==="login"?{borderBottom:"2px solid var(--gold)", color:"var(--navy)"}:{}} onClick={()=>{setModo("login"); setErro(""); setMensagem("");}}>Entrar</div>
+            <div className={"pb-2 cursor-pointer " + (modo==="cadastro"?"":"text-stone-400")} style={modo==="cadastro"?{borderBottom:"2px solid var(--gold)", color:"var(--navy)"}:{}} onClick={()=>{setModo("cadastro"); setErro(""); setMensagem("");}}>Criar conta</div>
+          </div>
+
+          {modo==="cadastro" && (
+            <>
+              <input className="kg-input mb-2" placeholder="Nome completo" value={f.nome} onChange={e=>set("nome",e.target.value)} />
+              <input className="kg-input mb-2" placeholder="CRN (registro profissional)" value={f.crn} onChange={e=>set("crn",e.target.value)} />
+            </>
+          )}
+          <input className="kg-input mb-2" type="email" placeholder="E-mail" value={f.email} onChange={e=>set("email",e.target.value)} />
+          <input className="kg-input mb-2" type="password" placeholder="Senha" value={f.senha} onChange={e=>set("senha",e.target.value)} />
+          {modo==="cadastro" && (
+            <input className="kg-input mb-2" type="password" placeholder="Confirmar senha" value={f.confirmarSenha} onChange={e=>set("confirmarSenha",e.target.value)} />
+          )}
+
+          {erro && <div className="text-xs mb-2" style={{color:"var(--bad)"}}>{erro}</div>}
+          {mensagem && <div className="text-xs mb-2" style={{color:"var(--good)"}}>{mensagem}</div>}
+
+          {modo==="login" ? (
+            <>
+              <button disabled={carregando} className="kg-btn-gold w-full mt-2" onClick={entrar}>{carregando?"Entrando...":"Entrar"}</button>
+              <div className="text-xs text-center mt-3 cursor-pointer text-stone-500 underline" onClick={recuperarSenha}>Esqueci minha senha</div>
+            </>
+          ) : (
+            <button disabled={carregando} className="kg-btn-gold w-full mt-2" onClick={cadastrar}>{carregando?"Criando conta...":"Criar minha conta"}</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CompletarPerfil({usuario, onCompleto}){
+  const [f, setF] = useState({nome:"", crn:""});
+  const [salvando, setSalvando] = useState(false);
+  const salvar = async ()=>{
+    if (!f.nome.trim() || !f.crn.trim()) return;
+    setSalvando(true);
+    const perfil = {nome:f.nome.trim(), crn:f.crn.trim(), email:usuario.email, criadoEm:new Date().toISOString()};
+    await db.collection("nutricionistas").doc(usuario.uid).set(perfil);
+    onCompleto(perfil);
+    setSalvando(false);
+  };
+  return (
+    <div className="min-h-screen flex items-center justify-center p-5" style={{background:"var(--navy)"}}>
+      <div className="kg-card p-6 w-full max-w-sm">
+        <div className="font-semibold mb-3">Complete seu perfil</div>
+        <input className="kg-input mb-2" placeholder="Nome completo" value={f.nome} onChange={e=>setF({...f,nome:e.target.value})} />
+        <input className="kg-input mb-3" placeholder="CRN (registro profissional)" value={f.crn} onChange={e=>setF({...f,crn:e.target.value})} />
+        <button disabled={salvando} className="kg-btn-gold w-full" onClick={salvar}>{salvando?"Salvando...":"Salvar e continuar"}</button>
+      </div>
+    </div>
+  );
+}
+
+/* ======================================================================
+   APP LOGADO — cada nutricionista só vê os próprios dados (produtos,
+   fichas técnicas e cardápios). A base de alimentos (TACO + customizados)
+   é compartilhada entre todos.
+====================================================================== */
+function AppLogado({usuario, perfil, isAdmin}){
   const [tab, setTab] = useState("dashboard");
   const [tacoData, setTacoData] = useState([]);
   const [produtos, setProdutos] = useState([]);
@@ -447,23 +659,23 @@ function App(){
     setLoadingTaco(false);
   },[]);
 
-  // Firestore listeners (com fallback em memória se Firebase não configurado)
+  // Firestore: produtos, fichas e cardápios são PRIVADOS (filtrados pelo dono);
+  // alimentosCustom é COMPARTILHADO entre todos os nutricionistas da plataforma
   useEffect(()=>{
-    if (!firebaseOk) return;
-    const u1 = db.collection("produtos").onSnapshot(snap=>{
+    const u1 = db.collection("produtos").where("donoId","==",usuario.uid).onSnapshot(snap=>{
       setProdutos(snap.docs.map(d=>({id:d.id, ...d.data()})));
     });
-    const u2 = db.collection("fichasTecnicas").onSnapshot(snap=>{
+    const u2 = db.collection("fichasTecnicas").where("donoId","==",usuario.uid).onSnapshot(snap=>{
       setFichas(snap.docs.map(d=>({id:d.id, ...d.data()})));
     });
     const u3 = db.collection("alimentosCustom").onSnapshot(snap=>{
       setCustomFoods(snap.docs.map(d=>({id:d.id, ...d.data()})));
     });
-    const u4 = db.collection("cardapios").onSnapshot(snap=>{
+    const u4 = db.collection("cardapios").where("donoId","==",usuario.uid).onSnapshot(snap=>{
       setCardapios(snap.docs.map(d=>({id:d.id, ...d.data()})));
     });
     return ()=>{u1();u2();u3();u4();};
-  },[]);
+  },[usuario.uid]);
 
   const tacoIndex = useMemo(()=>{
     const idx = {}; tacoData.forEach(t=>idx[t.id]=t); return idx;
@@ -475,82 +687,44 @@ function App(){
     const idx = {}; produtos.forEach(p=>idx[p.id]=p); return idx;
   },[produtos]);
 
-  // ---- persistência (Firestore ou memória local) ----
+  // ---- persistência (sempre com donoId = nutricionista logado) ----
   const salvarProduto = async (produto)=>{
-    if (firebaseOk){
-      if (produto.id){
-        const {id, ...rest} = produto;
-        await db.collection("produtos").doc(id).set(rest);
-      } else {
-        await db.collection("produtos").add(produto);
-      }
+    if (produto.id){
+      const {id, ...rest} = produto;
+      await db.collection("produtos").doc(id).set({...rest, donoId:usuario.uid});
     } else {
-      setProdutos(prev=>{
-        if (produto.id) return prev.map(p=>p.id===produto.id?produto:p);
-        return [...prev, {...produto, id:uid()}];
-      });
+      await db.collection("produtos").add({...produto, donoId:usuario.uid});
     }
   };
-  const excluirProduto = async (id)=>{
-    if (firebaseOk){ await db.collection("produtos").doc(id).delete(); }
-    else { setProdutos(prev=>prev.filter(p=>p.id!==id)); }
-  };
+  const excluirProduto = async (id)=>{ await db.collection("produtos").doc(id).delete(); };
 
   const salvarFicha = async (ficha)=>{
-    if (firebaseOk){
-      if (ficha.id){
-        const {id, ...rest} = ficha;
-        await db.collection("fichasTecnicas").doc(id).set(rest);
-      } else {
-        await db.collection("fichasTecnicas").add(ficha);
-      }
+    if (ficha.id){
+      const {id, ...rest} = ficha;
+      await db.collection("fichasTecnicas").doc(id).set({...rest, donoId:usuario.uid});
     } else {
-      setFichas(prev=>{
-        if (ficha.id) return prev.map(f=>f.id===ficha.id?ficha:f);
-        return [...prev, {...ficha, id:uid()}];
-      });
+      await db.collection("fichasTecnicas").add({...ficha, donoId:usuario.uid});
     }
   };
-  const excluirFicha = async (id)=>{
-    if (firebaseOk){ await db.collection("fichasTecnicas").doc(id).delete(); }
-    else { setFichas(prev=>prev.filter(f=>f.id!==id)); }
-  };
+  const excluirFicha = async (id)=>{ await db.collection("fichasTecnicas").doc(id).delete(); };
 
+  // alimentos customizados são compartilhados — qualquer nutricionista adiciona,
+  // todos passam a ver (fica registrado quem criou, pra referência)
   const salvarCustomFood = async (food)=>{
-    if (firebaseOk){
-      if (food.id){ const {id,...rest}=food; await db.collection("alimentosCustom").doc(id).set(rest); }
-      else { await db.collection("alimentosCustom").add(food); }
-    } else {
-      setCustomFoods(prev=>{
-        if (food.id) return prev.map(f=>f.id===food.id?food:f);
-        return [...prev, {...food, id:uid()}];
-      });
-    }
+    if (food.id){ const {id,...rest}=food; await db.collection("alimentosCustom").doc(id).set({...rest, criadoPor:usuario.uid}); }
+    else { await db.collection("alimentosCustom").add({...food, criadoPor:usuario.uid}); }
   };
-  const excluirCustomFood = async (id)=>{
-    if (firebaseOk){ await db.collection("alimentosCustom").doc(id).delete(); }
-    else { setCustomFoods(prev=>prev.filter(f=>f.id!==id)); }
-  };
+  const excluirCustomFood = async (id)=>{ await db.collection("alimentosCustom").doc(id).delete(); };
 
   const salvarCardapio = async (cardapio)=>{
-    if (firebaseOk){
-      if (cardapio.id){
-        const {id, ...rest} = cardapio;
-        await db.collection("cardapios").doc(id).set(rest);
-      } else {
-        await db.collection("cardapios").add(cardapio);
-      }
+    if (cardapio.id){
+      const {id, ...rest} = cardapio;
+      await db.collection("cardapios").doc(id).set({...rest, donoId:usuario.uid});
     } else {
-      setCardapios(prev=>{
-        if (cardapio.id) return prev.map(c=>c.id===cardapio.id?cardapio:c);
-        return [...prev, {...cardapio, id:uid()}];
-      });
+      await db.collection("cardapios").add({...cardapio, donoId:usuario.uid});
     }
   };
-  const excluirCardapio = async (id)=>{
-    if (firebaseOk){ await db.collection("cardapios").doc(id).delete(); }
-    else { setCardapios(prev=>prev.filter(c=>c.id!==id)); }
-  };
+  const excluirCardapio = async (id)=>{ await db.collection("cardapios").doc(id).delete(); };
 
   const TABS = [
     {k:"dashboard", label:"Painel"},
@@ -558,6 +732,7 @@ function App(){
     {k:"produtos", label:"Produtos & Custos"},
     {k:"fichas", label:"Fichas Técnicas"},
     {k:"cardapios", label:"Cardápios"},
+    ...(isAdmin ? [{k:"admin", label:"Administração"}] : []),
   ];
 
   return (
@@ -566,18 +741,17 @@ function App(){
         <div className="max-w-7xl mx-auto px-5 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div style={{background:"var(--gold)"}} className="w-9 h-9 rounded-full flex items-center justify-center">
-              <span style={{color:"var(--navy)"}} className="font-bold text-sm serif">K&G</span>
+              <span style={{color:"var(--navy)"}} className="font-bold text-sm serif">MN</span>
             </div>
             <div>
               <div className="serif text-lg leading-none" style={{color:"var(--gold-2)"}}>MeuNutri</div>
-              <div className="text-[11px] text-white/50 tracking-wide">Kaluf & Gomes Soluções Empresariais</div>
+              <div className="text-[11px] text-white/50 tracking-wide">{perfil.nome} · CRN {perfil.crn}</div>
             </div>
           </div>
-          {!firebaseOk && (
-            <div className="text-[11px] px-3 py-1.5 rounded-full bg-white/10 text-white/70">
-              Modo local — configure o Firebase para persistir os dados
-            </div>
-          )}
+          <div className="flex items-center gap-3">
+            {isAdmin && <span className="kg-badge" style={{background:"var(--gold)", color:"var(--navy)"}}>admin</span>}
+            <button className="text-xs text-white/60 hover:text-white underline" onClick={()=>auth.signOut()}>Sair</button>
+          </div>
         </div>
         <div className="max-w-7xl mx-auto px-5 flex gap-6 border-t border-white/10">
           {TABS.map(t=>(
@@ -596,8 +770,46 @@ function App(){
         {tab==="alimentos" && <BaseAlimentos tacoData={tacoData} loadingTaco={loadingTaco} customFoods={customFoods} salvarCustomFood={salvarCustomFood} excluirCustomFood={excluirCustomFood} />}
         {tab==="produtos" && <Produtos produtos={produtos} tacoData={tacoData} customFoods={customFoods} salvarProduto={salvarProduto} excluirProduto={excluirProduto} />}
         {tab==="fichas" && <FichasTecnicas fichas={fichas} produtos={produtos} tacoIndex={tacoIndex} customIndex={customIndex} produtosIndex={produtosIndex} salvarFicha={salvarFicha} excluirFicha={excluirFicha} />}
-        {tab==="cardapios" && <Cardapios cardapios={cardapios} tacoData={tacoData} customFoods={customFoods} tacoIndex={tacoIndex} customIndex={customIndex} loadingTaco={loadingTaco} salvarCardapio={salvarCardapio} excluirCardapio={excluirCardapio} />}
+        {tab==="cardapios" && <Cardapios cardapios={cardapios} tacoData={tacoData} customFoods={customFoods} tacoIndex={tacoIndex} customIndex={customIndex} loadingTaco={loadingTaco} salvarCardapio={salvarCardapio} excluirCardapio={excluirCardapio} perfil={perfil} />}
+        {tab==="admin" && isAdmin && <Admin />}
       </main>
+    </div>
+  );
+}
+
+/* ======================================================================
+   ADMINISTRAÇÃO — lista de nutricionistas cadastrados na plataforma
+====================================================================== */
+function Admin(){
+  const [lista, setLista] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  useEffect(()=>{
+    db.collection("nutricionistas").get().then(snap=>{
+      setLista(snap.docs.map(d=>({id:d.id, ...d.data()})).sort((a,b)=>(b.criadoEm||"").localeCompare(a.criadoEm||"")));
+      setCarregando(false);
+    }).catch(e=>{ console.error(e); setCarregando(false); });
+  },[]);
+
+  return (
+    <div className="fade-in kg-card p-4">
+      <div className="font-semibold mb-1">Nutricionistas cadastrados</div>
+      <div className="text-xs text-stone-500 mb-4">Cada um só acessa os próprios dados de produtos, fichas técnicas e cardápios. A base de alimentos é compartilhada entre todos. Para desativar ou excluir um login, use o Firebase Console (Authentication) — essa ação exige acesso de administrador do projeto, fora do alcance deste painel.</div>
+      {carregando ? <div className="text-sm text-stone-500">Carregando...</div> : (
+        <table className="kg-table">
+          <thead><tr><th>Nome</th><th>CRN</th><th>E-mail</th><th>Desde</th></tr></thead>
+          <tbody>
+            {lista.map(n=>(
+              <tr key={n.id}>
+                <td className="font-medium">{n.nome}</td>
+                <td>{n.crn}</td>
+                <td className="text-stone-500">{n.email}</td>
+                <td className="text-stone-500">{n.criadoEm ? new Date(n.criadoEm).toLocaleDateString("pt-BR") : "—"}</td>
+              </tr>
+            ))}
+            {lista.length===0 && <tr><td colSpan="4" className="text-center text-stone-400 py-6">Nenhum nutricionista cadastrado ainda.</td></tr>}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
@@ -1090,7 +1302,7 @@ function FormFicha({ficha, produtos, tacoIndex, customIndex, produtosIndex, onSa
 /* ======================================================================
    CARDÁPIOS — lista, modelos e editor
 ====================================================================== */
-function Cardapios({cardapios, tacoData, customFoods, tacoIndex, customIndex, loadingTaco, salvarCardapio, excluirCardapio}){
+function Cardapios({cardapios, tacoData, customFoods, tacoIndex, customIndex, loadingTaco, salvarCardapio, excluirCardapio, perfil}){
   const [editando, setEditando] = useState(null);
   const [busca, setBusca] = useState("");
 
@@ -1106,7 +1318,7 @@ function Cardapios({cardapios, tacoData, customFoods, tacoIndex, customIndex, lo
   }
 
   if (editando){
-    return <FormCardapio cardapio={editando} tacoData={tacoData} customFoods={customFoods} tacoIndex={tacoIndex} customIndex={customIndex}
+    return <FormCardapio cardapio={editando} tacoData={tacoData} customFoods={customFoods} tacoIndex={tacoIndex} customIndex={customIndex} perfil={perfil}
       onSalvar={(c)=>{salvarCardapio(c); setEditando(null);}} onCancelar={()=>setEditando(null)} />;
   }
 
@@ -1318,12 +1530,15 @@ function RefeicaoCard({refeicao, cardapio, tacoData, customFoods, tacoIndex, cus
   );
 }
 
-function FormCardapio({cardapio, tacoData, customFoods, tacoIndex, customIndex, onSalvar, onCancelar}){
+function FormCardapio({cardapio, tacoData, customFoods, tacoIndex, customIndex, perfil, onSalvar, onCancelar}){
   const [c, setC] = useState(cardapio);
   useEffect(()=>setC(cardapio),[cardapio]);
   const set = (patch)=> setC(prev=>({...prev, ...patch}));
+  const [mostrarLista, setMostrarLista] = useState(false);
+  const [imprimindo, setImprimindo] = useState(false);
 
   const calc = useMemo(()=>calcularCardapio(c, tacoIndex, customIndex), [c, tacoIndex, customIndex]);
+  const listaCompras = useMemo(()=>gerarListaCompras(c, tacoIndex, customIndex), [c, tacoIndex, customIndex]);
   const somaPctRefeicoes = (c.refeicoes||[]).reduce((s,r)=>s+(parseFloat(r.pct)||0),0);
 
   const addRefeicao = ()=> set({refeicoes:[...(c.refeicoes||[]), {id:uid(), nome:"Nova refeição", pct:0, horario:"", composicao:[], itens:[]}]});
@@ -1331,6 +1546,16 @@ function FormCardapio({cardapio, tacoData, customFoods, tacoIndex, customIndex, 
   const rmRefeicao = (id)=> set({refeicoes: c.refeicoes.filter(r=>r.id!==id)});
 
   const gerarTudo = ()=> set(gerarCardapioCompleto(c, tacoData, customFoods));
+
+  const exportarPdf = ()=>{
+    setImprimindo(true);
+    setTimeout(()=>{ window.print(); }, 150);
+  };
+  useEffect(()=>{
+    const onAfterPrint = ()=> setImprimindo(false);
+    window.addEventListener('afterprint', onAfterPrint);
+    return ()=> window.removeEventListener('afterprint', onAfterPrint);
+  },[]);
 
   const kcalAlvoNum = parseFloat(c.kcalAlvo)||0;
   const somaMacroPct = (parseFloat(c.macroPct?.cho)||0)+(parseFloat(c.macroPct?.ptn)||0)+(parseFloat(c.macroPct?.lip)||0);
@@ -1342,7 +1567,8 @@ function FormCardapio({cardapio, tacoData, customFoods, tacoIndex, customIndex, 
 
   return (
     <div className="fade-in grid lg:grid-cols-5 gap-5">
-      <div className="lg:col-span-3 space-y-3">
+      {imprimindo && <PrintCardapio cardapio={c} calc={calc} listaCompras={listaCompras} metaG={metaG} kcalAlvoNum={kcalAlvoNum} perfil={perfil} tacoIndex={tacoIndex} customIndex={customIndex} />}
+      <div className="lg:col-span-3 space-y-3 no-print">
         <div className="kg-card p-4">
           <div className="font-semibold mb-3">{c.id ? "Editar cardápio" : "Novo cardápio"}</div>
           <div className="grid sm:grid-cols-2 gap-2 mb-2">
@@ -1357,9 +1583,9 @@ function FormCardapio({cardapio, tacoData, customFoods, tacoIndex, customIndex, 
           </div>
         </div>
 
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="text-sm font-semibold">Refeições {somaPctRefeicoes!==100 && <span className="text-orange-500 text-xs font-normal">(soma {somaPctRefeicoes}% do dia, ideal 100%)</span>}</div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             <button className="kg-btn-gold" onClick={gerarTudo}>⚡ Gerar cardápio completo</button>
             <button className="kg-btn-ghost" onClick={addRefeicao}>+ refeição</button>
           </div>
@@ -1372,14 +1598,18 @@ function FormCardapio({cardapio, tacoData, customFoods, tacoIndex, customIndex, 
           ))}
         </div>
 
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <button className="kg-btn-gold" onClick={()=>{ if(c.nome.trim()) onSalvar({...c, isModelo:false}); }}>Salvar cardápio</button>
           <button className="kg-btn-ghost" onClick={()=>{ if(c.nome.trim()) onSalvar({...c, isModelo:true}); }}>Salvar como modelo reutilizável</button>
+          <button className="kg-btn-ghost" onClick={()=>setMostrarLista(v=>!v)}>🛒 Lista de compras</button>
+          <button className="kg-btn-ghost" onClick={exportarPdf}>📄 Exportar PDF</button>
           <button className="kg-btn-ghost" onClick={onCancelar}>Cancelar</button>
         </div>
+
+        {mostrarLista && <ListaComprasPanel listaCompras={listaCompras} />}
       </div>
 
-      <div className="lg:col-span-2 space-y-4 sticky top-4 self-start">
+      <div className="lg:col-span-2 space-y-4 sticky top-4 self-start no-print">
         <div className="kg-card p-5" style={{background:"var(--navy)"}}>
           <div className="text-white/60 text-xs uppercase tracking-wide mb-1">Total calculado do dia</div>
           <div className="serif text-3xl text-white mb-1">{fmt(calc.nutri.energy_kcal,0)} kcal</div>
@@ -1425,6 +1655,116 @@ function FormCardapio({cardapio, tacoData, customFoods, tacoIndex, customIndex, 
         </div>
       </div>
     </div>
+  );
+}
+
+function ListaComprasPanel({listaCompras}){
+  return (
+    <div className="kg-card p-4 fade-in">
+      <div className="font-semibold mb-3">🛒 Lista de compras deste cardápio</div>
+      {listaCompras.length===0 ? (
+        <div className="text-sm text-stone-400">Adicione alimentos às refeições para ver a lista de compras.</div>
+      ) : (
+        <div className="grid sm:grid-cols-2 gap-4">
+          {listaCompras.map(grupo=>(
+            <div key={grupo.categoria}>
+              <div className="text-[11px] font-semibold text-stone-500 uppercase mb-1">{grupo.categoria}</div>
+              <div className="space-y-1">
+                {grupo.itens.map((it,i)=>(
+                  <div key={i} className="flex items-center justify-between text-sm border-b border-stone-100 pb-1">
+                    <span>{it.nome}</span>
+                    <span className="font-semibold text-stone-600">{it.display}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// versão de impressão do cardápio — só isso fica visível quando window.print() é chamado
+function PrintCardapio({cardapio, calc, listaCompras, metaG, kcalAlvoNum, perfil, tacoIndex, customIndex}){
+  return (
+    <div id="print-area">
+      <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", borderBottom:"2px solid #0A1F35", paddingBottom:"10px", marginBottom:"16px"}}>
+        <div>
+          <div style={{fontFamily:"Fraunces, serif", fontSize:"20px", color:"#0A1F35"}}>MeuNutri</div>
+          <div style={{fontSize:"11px", color:"#666"}}>Plano alimentar</div>
+        </div>
+        <div style={{textAlign:"right"}}>
+          <div style={{fontWeight:700}}>{perfil?.nome}</div>
+          <div style={{fontSize:"11px", color:"#666"}}>CRN {perfil?.crn}</div>
+        </div>
+      </div>
+
+      <div style={{fontSize:"18px", fontWeight:700, marginBottom:"2px"}}>{cardapio.nome || "Cardápio"}</div>
+      <div style={{fontSize:"11px", color:"#666", marginBottom:"14px"}}>Emitido em {new Date().toLocaleDateString("pt-BR")} · Alvo: {fmt(kcalAlvoNum,0)} kcal/dia · Calculado: {fmt(calc.nutri.energy_kcal,0)} kcal/dia</div>
+
+      <div style={{display:"flex", gap:"8px", marginBottom:"18px"}}>
+        <div style={{flex:1, background:"#f1ede0", borderRadius:"8px", padding:"8px", textAlign:"center"}}>
+          <div style={{fontSize:"10px", color:"#666"}}>CARBOIDRATO</div>
+          <div style={{fontWeight:700}}>{fmt(calc.nutri.carbohydrate_g,0)}g</div>
+        </div>
+        <div style={{flex:1, background:"#f1ede0", borderRadius:"8px", padding:"8px", textAlign:"center"}}>
+          <div style={{fontSize:"10px", color:"#666"}}>PROTEÍNA</div>
+          <div style={{fontWeight:700}}>{fmt(calc.nutri.protein_g,0)}g</div>
+        </div>
+        <div style={{flex:1, background:"#f1ede0", borderRadius:"8px", padding:"8px", textAlign:"center"}}>
+          <div style={{fontSize:"10px", color:"#666"}}>LIPÍDEO</div>
+          <div style={{fontWeight:700}}>{fmt(calc.nutri.lipid_g,0)}g</div>
+        </div>
+      </div>
+
+      {calc.porRefeicao.map(pr=>(
+        <div key={pr.refeicao.id} style={{marginBottom:"14px", breakInside:"avoid"}}>
+          <div style={{display:"flex", justifyContent:"space-between", borderBottom:"1px solid #ccc", paddingBottom:"3px", marginBottom:"5px"}}>
+            <div style={{fontWeight:700}}>{pr.refeicao.nome} {pr.refeicao.horario && <span style={{fontWeight:400, color:"#666"}}>· {pr.refeicao.horario}</span>}</div>
+            <div style={{color:"#666"}}>{fmt(pr.nutri.energy_kcal,0)} kcal</div>
+          </div>
+          <PrintItensRefeicao refeicao={pr.refeicao} tacoIndex={tacoIndex} customIndex={customIndex} />
+        </div>
+      ))}
+
+      {listaCompras.length>0 && (
+        <div style={{marginTop:"20px", breakInside:"avoid"}}>
+          <div style={{fontSize:"14px", fontWeight:700, borderBottom:"2px solid #0A1F35", paddingBottom:"4px", marginBottom:"8px"}}>Lista de compras</div>
+          <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:"10px"}}>
+            {listaCompras.map(grupo=>(
+              <div key={grupo.categoria}>
+                <div style={{fontSize:"10px", fontWeight:700, color:"#666", textTransform:"uppercase"}}>{grupo.categoria}</div>
+                {grupo.itens.map((it,i)=>(
+                  <div key={i} style={{display:"flex", justifyContent:"space-between", fontSize:"12px", borderBottom:"1px solid #eee", padding:"2px 0"}}>
+                    <span>{it.nome}</span><span style={{fontWeight:700}}>{it.display}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PrintItensRefeicao({refeicao, tacoIndex, customIndex}){
+  return (
+    <>
+      {(refeicao.itens||[]).map(item=>{
+        const alimento = alimentoDoItem(item, tacoIndex, customIndex);
+        const npg = nutrientesPorGramaAlimento(alimento);
+        const g = parseFloat(item.quantidade)||0;
+        const kcal = npg?.energy_kcal!=null ? npg.energy_kcal*g : null;
+        return (
+          <div key={item.id} style={{display:"flex", justifyContent:"space-between", fontSize:"12px", padding:"1px 0"}}>
+            <span>• {alimento?.nome || "Alimento"} — {fmt(g,0)}g</span>
+            <span style={{color:"#666"}}>{fmt(kcal,0)} kcal</span>
+          </div>
+        );
+      })}
+    </>
   );
 }
 
