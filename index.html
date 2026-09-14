@@ -11,6 +11,7 @@
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -259,6 +260,12 @@ function Icone({nome, className}){
     peso: <><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></>,
     regua: <><rect x="2" y="7" width="20" height="10" rx="1.5"/><path d="M6 7v3M10 7v5M14 7v3M18 7v5"/></>,
     alvo: <><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></>,
+    empresa: <><rect x="3" y="7" width="18" height="14" rx="1.5"/><path d="M8 21V5a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v16"/><path d="M11 10h2M11 14h2"/></>,
+    caixa: <><path d="M21 8 12 4 3 8l9 4 9-4Z"/><path d="M3 8v9l9 4 9-4V8"/><path d="M12 12v9"/></>,
+    entrada: <><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></>,
+    saida: <><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></>,
+    grafico: <><path d="M3 3v18h18"/><path d="M7 16l4-6 3 3 5-8"/></>,
+    engrenagem: <><circle cx="12" cy="12" r="3"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></>,
   };
   return <svg {...props}>{paths[nome]||null}</svg>;
 }
@@ -549,6 +556,41 @@ function gerarListaCompras(cardapio, tacoIndex, customIndex){
 /* ======================================================================
    APP
 ====================================================================== */
+/* ======================================================================
+   UAN — Unidade de Alimentação e Nutrição (estoque, consumo, desperdício)
+====================================================================== */
+const UNIDADES_ESTOQUE = ["kg","g","L","ml","fardo","pacote","caixa","dz","un"];
+
+function clienteUANVazio(){
+  return {nome:"", tipo:"Empresa", contato:"", endereco:"", observacoes:""};
+}
+
+function itemEstoqueVazio(){
+  return {nome:"", categoria:"Mercado / Mercearia", unidade:"kg", estoqueAtual:"0", consumoMedioSemanal:"0", clienteId:""};
+}
+
+// média real de saída por semana, a partir do histórico de movimentações (últimas N semanas)
+function mediaConsumoReal(itemId, movimentacoes, semanas=4){
+  const limite = new Date();
+  limite.setDate(limite.getDate() - semanas*7);
+  const saidas = movimentacoes.filter(m=>m.itemId===itemId && m.tipo==="saida" && new Date(m.data)>=limite);
+  const total = saidas.reduce((s,m)=>s+(parseFloat(m.quantidade)||0),0);
+  return total/semanas;
+}
+
+// sugestão de compra: o que falta pra cobrir o consumo médio semanal informado, dado o estoque atual
+function gerarListaComprasUAN(itensEstoque){
+  return itensEstoque
+    .map(it=>{
+      const atual = parseFloat(it.estoqueAtual)||0;
+      const consumo = parseFloat(it.consumoMedioSemanal)||0;
+      const sugestao = Math.max(0, consumo - atual);
+      return {...it, sugestao};
+    })
+    .filter(it=>it.sugestao>0)
+    .sort((a,b)=>b.sugestao-a.sugestao);
+}
+
 function App(){
   const [usuario, setUsuario] = useState(null);
   const [perfil, setPerfil] = useState(null);
@@ -596,7 +638,7 @@ function App(){
   }
 
   const isAdmin = ADMIN_EMAILS.includes(usuario.email);
-  return <AppLogado usuario={usuario} perfil={perfil} isAdmin={isAdmin} />;
+  return <AppLogado usuario={usuario} perfil={perfil} isAdmin={isAdmin} onPerfilAtualizado={setPerfil} />;
 }
 
 /* ======================================================================
@@ -620,7 +662,7 @@ function Auth({onCadastroCompleto}){
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState("");
   const [mensagem, setMensagem] = useState("");
-  const [f, setF] = useState({nome:"", crn:"", email:"", senha:"", confirmarSenha:""});
+  const [f, setF] = useState({nome:"", crn:"", email:"", senha:"", confirmarSenha:"", modulos:{clinico:true, uan:false}});
   const set = (k,v)=>setF(prev=>({...prev,[k]:v}));
 
   const entrar = async ()=>{
@@ -635,11 +677,13 @@ function Auth({onCadastroCompleto}){
     setErro("");
     if (!f.nome.trim() || !f.email.trim() || !f.senha){ setErro("Preencha nome, e-mail e senha."); return; }
     if (f.senha !== f.confirmarSenha){ setErro("As senhas não coincidem."); return; }
+    if (!f.modulos.clinico && !f.modulos.uan){ setErro("Selecione ao menos um módulo."); return; }
     setCarregando(true);
     try {
       const cred = await auth.createUserWithEmailAndPassword(f.email.trim(), f.senha);
       const perfil = {
         nome: f.nome.trim(), crn: f.crn.trim(), email: f.email.trim(),
+        modulos: f.modulos,
         criadoEm: new Date().toISOString()
       };
       perfilRecemCriado = {uid: cred.user.uid, perfil};
@@ -679,6 +723,20 @@ function Auth({onCadastroCompleto}){
             <>
               <input className="kg-input mb-2" placeholder="Nome completo" value={f.nome} onChange={e=>set("nome",e.target.value)} />
               <input className="kg-input mb-2" placeholder="CRN (registro profissional — deixe em branco se não for nutricionista)" value={f.crn} onChange={e=>set("crn",e.target.value)} />
+              <div className="mb-2">
+                <label className="text-[11px] text-stone-500 block mb-1">Módulos que você usa</label>
+                <div className="flex gap-2">
+                  <label className={"flex-1 border rounded-lg px-3 py-2 text-sm cursor-pointer flex items-center gap-2 " + (f.modulos.clinico?"":"text-stone-400")} style={{borderColor: f.modulos.clinico?"var(--gold)":"var(--line)", background: f.modulos.clinico?"#faf6ee":"#fff"}}>
+                    <input type="checkbox" checked={f.modulos.clinico} onChange={e=>set("modulos",{...f.modulos, clinico:e.target.checked})} />
+                    Clínico
+                  </label>
+                  <label className={"flex-1 border rounded-lg px-3 py-2 text-sm cursor-pointer flex items-center gap-2 " + (f.modulos.uan?"":"text-stone-400")} style={{borderColor: f.modulos.uan?"var(--gold)":"var(--line)", background: f.modulos.uan?"#faf6ee":"#fff"}}>
+                    <input type="checkbox" checked={f.modulos.uan} onChange={e=>set("modulos",{...f.modulos, uan:e.target.checked})} />
+                    UAN
+                  </label>
+                </div>
+                <div className="text-[10px] text-stone-400 mt-1">Dá pra ativar os dois, ou mudar depois em Configurações.</div>
+              </div>
             </>
           )}
           <input className="kg-input mb-2" type="email" placeholder="E-mail" value={f.email} onChange={e=>set("email",e.target.value)} />
@@ -710,7 +768,7 @@ function CompletarPerfil({usuario, onCompleto}){
   const salvar = async ()=>{
     if (!f.nome.trim()) return;
     setSalvando(true);
-    const perfil = {nome:f.nome.trim(), crn:f.crn.trim(), email:usuario.email, criadoEm:new Date().toISOString()};
+    const perfil = {nome:f.nome.trim(), crn:f.crn.trim(), email:usuario.email, modulos:{clinico:true, uan:false}, criadoEm:new Date().toISOString()};
     await db.collection("nutricionistas").doc(usuario.uid).set(perfil);
     onCompleto(perfil);
     setSalvando(false);
@@ -732,7 +790,7 @@ function CompletarPerfil({usuario, onCompleto}){
    fichas técnicas e cardápios). A base de alimentos (TACO + customizados)
    é compartilhada entre todos.
 ====================================================================== */
-function AppLogado({usuario, perfil, isAdmin}){
+function AppLogado({usuario, perfil, isAdmin, onPerfilAtualizado}){
   const [tab, setTab] = useState("dashboard");
   const [tacoData, setTacoData] = useState([]);
   const [produtos, setProdutos] = useState([]);
@@ -740,7 +798,13 @@ function AppLogado({usuario, perfil, isAdmin}){
   const [fichas, setFichas] = useState([]);
   const [cardapios, setCardapios] = useState([]);
   const [pacientes, setPacientes] = useState([]);
+  const [clientesUAN, setClientesUAN] = useState([]);
+  const [itensEstoque, setItensEstoque] = useState([]);
+  const [movimentacoes, setMovimentacoes] = useState([]);
+  const [desperdicios, setDesperdicios] = useState([]);
   const [loadingTaco, setLoadingTaco] = useState(true);
+
+  const modulos = perfil.modulos || {clinico:true, uan:false};
 
   // base TACO embutida no próprio arquivo — funciona mesmo aberto localmente, sem servidor
   useEffect(()=>{
@@ -748,25 +812,21 @@ function AppLogado({usuario, perfil, isAdmin}){
     setLoadingTaco(false);
   },[]);
 
-  // Firestore: produtos, fichas, pacientes e cardápios são PRIVADOS (filtrados pelo
-  // dono); alimentosCustom é COMPARTILHADO entre todos os nutricionistas da plataforma
+  // Firestore: tudo abaixo é PRIVADO (filtrado pelo dono); alimentosCustom é
+  // COMPARTILHADO entre todos os nutricionistas da plataforma
   useEffect(()=>{
-    const u1 = db.collection("produtos").where("donoId","==",usuario.uid).onSnapshot(snap=>{
-      setProdutos(snap.docs.map(d=>({id:d.id, ...d.data()})));
-    });
-    const u2 = db.collection("fichasTecnicas").where("donoId","==",usuario.uid).onSnapshot(snap=>{
-      setFichas(snap.docs.map(d=>({id:d.id, ...d.data()})));
-    });
-    const u3 = db.collection("alimentosCustom").onSnapshot(snap=>{
-      setCustomFoods(snap.docs.map(d=>({id:d.id, ...d.data()})));
-    });
-    const u4 = db.collection("cardapios").where("donoId","==",usuario.uid).onSnapshot(snap=>{
-      setCardapios(snap.docs.map(d=>({id:d.id, ...d.data()})));
-    });
-    const u5 = db.collection("pacientes").where("donoId","==",usuario.uid).onSnapshot(snap=>{
-      setPacientes(snap.docs.map(d=>({id:d.id, ...d.data()})));
-    });
-    return ()=>{u1();u2();u3();u4();u5();};
+    const subs = [
+      db.collection("produtos").where("donoId","==",usuario.uid).onSnapshot(snap=>setProdutos(snap.docs.map(d=>({id:d.id, ...d.data()})))),
+      db.collection("fichasTecnicas").where("donoId","==",usuario.uid).onSnapshot(snap=>setFichas(snap.docs.map(d=>({id:d.id, ...d.data()})))),
+      db.collection("alimentosCustom").onSnapshot(snap=>setCustomFoods(snap.docs.map(d=>({id:d.id, ...d.data()})))),
+      db.collection("cardapios").where("donoId","==",usuario.uid).onSnapshot(snap=>setCardapios(snap.docs.map(d=>({id:d.id, ...d.data()})))),
+      db.collection("pacientes").where("donoId","==",usuario.uid).onSnapshot(snap=>setPacientes(snap.docs.map(d=>({id:d.id, ...d.data()})))),
+      db.collection("clientesUAN").where("donoId","==",usuario.uid).onSnapshot(snap=>setClientesUAN(snap.docs.map(d=>({id:d.id, ...d.data()})))),
+      db.collection("itensEstoque").where("donoId","==",usuario.uid).onSnapshot(snap=>setItensEstoque(snap.docs.map(d=>({id:d.id, ...d.data()})))),
+      db.collection("movimentacoesEstoque").where("donoId","==",usuario.uid).onSnapshot(snap=>setMovimentacoes(snap.docs.map(d=>({id:d.id, ...d.data()})))),
+      db.collection("desperdicios").where("donoId","==",usuario.uid).onSnapshot(snap=>setDesperdicios(snap.docs.map(d=>({id:d.id, ...d.data()})))),
+    ];
+    return ()=>subs.forEach(u=>u());
   },[usuario.uid]);
 
   const tacoIndex = useMemo(()=>{
@@ -831,13 +891,61 @@ function AppLogado({usuario, perfil, isAdmin}){
   };
   const excluirPaciente = async (id)=>{ await db.collection("pacientes").doc(id).delete(); };
 
-  const TABS = [
-    {k:"dashboard", label:"Painel", icone:"painel"},
+  // ---- UAN ----
+  const salvarClienteUAN = async (cliente)=>{
+    if (cliente.id){ const {id,...rest}=cliente; await db.collection("clientesUAN").doc(id).set({...rest, donoId:usuario.uid}); }
+    else { await db.collection("clientesUAN").add({...cliente, donoId:usuario.uid}); }
+  };
+  const excluirClienteUAN = async (id)=>{ await db.collection("clientesUAN").doc(id).delete(); };
+
+  const salvarItemEstoque = async (item)=>{
+    if (item.id){ const {id,...rest}=item; await db.collection("itensEstoque").doc(id).set({...rest, donoId:usuario.uid}); }
+    else { await db.collection("itensEstoque").add({...item, donoId:usuario.uid}); }
+  };
+  const excluirItemEstoque = async (id)=>{ await db.collection("itensEstoque").doc(id).delete(); };
+
+  // registra entrada/saída E já atualiza o estoqueAtual do item, num só passo
+  const registrarMovimentacao = async (item, tipo, quantidade, observacao)=>{
+    const qtd = parseFloat(quantidade)||0;
+    if (qtd<=0) return;
+    await db.collection("movimentacoesEstoque").add({
+      itemId:item.id, tipo, quantidade:qtd, data:new Date().toISOString(), observacao:observacao||"", donoId:usuario.uid
+    });
+    const atual = parseFloat(item.estoqueAtual)||0;
+    const novo = tipo==="entrada" ? atual+qtd : Math.max(0, atual-qtd);
+    await db.collection("itensEstoque").doc(item.id).set({...item, estoqueAtual:String(novo), donoId:usuario.uid});
+  };
+
+  const salvarDesperdicio = async (registro)=>{
+    await db.collection("desperdicios").add({...registro, donoId:usuario.uid});
+  };
+  const excluirDesperdicio = async (id)=>{ await db.collection("desperdicios").doc(id).delete(); };
+
+  const salvarModulos = async (novosModulos)=>{
+    const {id, ...rest} = perfil;
+    await db.collection("nutricionistas").doc(usuario.uid).set({...rest, modulos:novosModulos});
+    onPerfilAtualizado?.({...perfil, modulos:novosModulos});
+  };
+
+  const TABS_CLINICO = [
     {k:"pacientes", label:"Pacientes", icone:"pacientes"},
     {k:"cardapios", label:"Cardápios", icone:"cardapios"},
     {k:"alimentos", label:"Base de Alimentos", icone:"alimentos"},
     {k:"produtos", label:"Produtos & Custos", icone:"produtos"},
     {k:"fichas", label:"Fichas Técnicas", icone:"fichas"},
+  ];
+  const TABS_UAN = [
+    {k:"clientesUAN", label:"Clientes", icone:"empresa"},
+    {k:"estoque", label:"Estoque", icone:"caixa"},
+    {k:"comprasUAN", label:"Lista de Compras", icone:"carrinho"},
+    {k:"desperdicio", label:"Desperdício", icone:"grafico"},
+  ];
+
+  const TABS = [
+    {k:"dashboard", label:"Painel", icone:"painel"},
+    ...(modulos.clinico ? TABS_CLINICO : []),
+    ...(modulos.uan ? TABS_UAN : []),
+    {k:"config", label:"Configurações", icone:"engrenagem"},
     ...(isAdmin ? [{k:"admin", label:"Administração", icone:"admin"}] : []),
   ];
 
@@ -850,13 +958,35 @@ function AppLogado({usuario, perfil, isAdmin}){
           </div>
           <div className="serif text-lg leading-none text-white">MeuNutri</div>
         </div>
-        <nav className="flex flex-col gap-1 flex-1">
-          {TABS.map(t=>(
-            <div key={t.k} onClick={()=>setTab(t.k)} className={"kg-nav-link " + (tab===t.k?"active":"")}>
-              <Icone nome={t.icone} />
-              <span>{t.label}</span>
+        <nav className="flex flex-col gap-1 flex-1 overflow-y-auto">
+          <div onClick={()=>setTab("dashboard")} className={"kg-nav-link " + (tab==="dashboard"?"active":"")}>
+            <Icone nome="painel" /><span>Painel</span>
+          </div>
+          {modulos.clinico && <>
+            <div className="px-5 pt-3 pb-1 text-[10px] uppercase tracking-wider text-white/30 font-semibold">Clínico</div>
+            {TABS_CLINICO.map(t=>(
+              <div key={t.k} onClick={()=>setTab(t.k)} className={"kg-nav-link " + (tab===t.k?"active":"")}>
+                <Icone nome={t.icone} /><span>{t.label}</span>
+              </div>
+            ))}
+          </>}
+          {modulos.uan && <>
+            <div className="px-5 pt-3 pb-1 text-[10px] uppercase tracking-wider text-white/30 font-semibold">UAN</div>
+            {TABS_UAN.map(t=>(
+              <div key={t.k} onClick={()=>setTab(t.k)} className={"kg-nav-link " + (tab===t.k?"active":"")}>
+                <Icone nome={t.icone} /><span>{t.label}</span>
+              </div>
+            ))}
+          </>}
+          <div className="px-5 pt-3 pb-1 text-[10px] uppercase tracking-wider text-white/30 font-semibold">Conta</div>
+          <div onClick={()=>setTab("config")} className={"kg-nav-link " + (tab==="config"?"active":"")}>
+            <Icone nome="engrenagem" /><span>Configurações</span>
+          </div>
+          {isAdmin && (
+            <div onClick={()=>setTab("admin")} className={"kg-nav-link " + (tab==="admin"?"active":"")}>
+              <Icone nome="admin" /><span>Administração</span>
             </div>
-          ))}
+          )}
         </nav>
         <div className="px-5 pt-4 mt-4 border-t border-white/10">
           <div className="flex items-center gap-2 mb-3">
@@ -883,12 +1013,17 @@ function AppLogado({usuario, perfil, isAdmin}){
           </div>
         </header>
         <main className="max-w-7xl mx-auto px-6 py-6">
-          {tab==="dashboard" && <Dashboard produtos={produtos} fichas={fichas} cardapios={cardapios} pacientes={pacientes} tacoData={tacoData} loadingTaco={loadingTaco} produtosIndex={produtosIndex} tacoIndex={tacoIndex} customIndex={customIndex} setTab={setTab} />}
+          {tab==="dashboard" && <Dashboard produtos={produtos} fichas={fichas} cardapios={cardapios} pacientes={pacientes} itensEstoque={itensEstoque} clientesUAN={clientesUAN} modulos={modulos} tacoData={tacoData} loadingTaco={loadingTaco} produtosIndex={produtosIndex} tacoIndex={tacoIndex} customIndex={customIndex} setTab={setTab} />}
           {tab==="pacientes" && <Pacientes pacientes={pacientes} cardapios={cardapios} salvarPaciente={salvarPaciente} excluirPaciente={excluirPaciente} setTab={setTab} />}
           {tab==="alimentos" && <BaseAlimentos tacoData={tacoData} loadingTaco={loadingTaco} customFoods={customFoods} salvarCustomFood={salvarCustomFood} excluirCustomFood={excluirCustomFood} />}
           {tab==="produtos" && <Produtos produtos={produtos} tacoData={tacoData} customFoods={customFoods} salvarProduto={salvarProduto} excluirProduto={excluirProduto} />}
           {tab==="fichas" && <FichasTecnicas fichas={fichas} produtos={produtos} tacoIndex={tacoIndex} customIndex={customIndex} produtosIndex={produtosIndex} salvarFicha={salvarFicha} excluirFicha={excluirFicha} />}
           {tab==="cardapios" && <Cardapios cardapios={cardapios} pacientes={pacientes} pacientesIndex={pacientesIndex} tacoData={tacoData} customFoods={customFoods} tacoIndex={tacoIndex} customIndex={customIndex} loadingTaco={loadingTaco} salvarCardapio={salvarCardapio} excluirCardapio={excluirCardapio} perfil={perfil} />}
+          {tab==="clientesUAN" && <ClientesUAN clientes={clientesUAN} salvarCliente={salvarClienteUAN} excluirCliente={excluirClienteUAN} />}
+          {tab==="estoque" && <Estoque itens={itensEstoque} clientes={clientesUAN} movimentacoes={movimentacoes} salvarItem={salvarItemEstoque} excluirItem={excluirItemEstoque} registrarMovimentacao={registrarMovimentacao} />}
+          {tab==="comprasUAN" && <ComprasUAN itens={itensEstoque} />}
+          {tab==="desperdicio" && <Desperdicio itens={itensEstoque} desperdicios={desperdicios} salvarDesperdicio={salvarDesperdicio} excluirDesperdicio={excluirDesperdicio} />}
+          {tab==="config" && <Configuracoes usuario={usuario} perfil={perfil} salvarModulos={salvarModulos} />}
           {tab==="admin" && isAdmin && <Admin />}
         </main>
       </div>
@@ -1014,6 +1149,374 @@ function FormPaciente({paciente, onSalvar, onCancelar}){
 }
 
 /* ======================================================================
+   MÓDULO UAN — clientes (empresas), estoque, compras sugeridas, desperdício
+====================================================================== */
+function ClientesUAN({clientes, salvarCliente, excluirCliente}){
+  const [editando, setEditando] = useState(null);
+  const [busca, setBusca] = useState("");
+  const lista = useMemo(()=>{
+    let out = clientes;
+    if (busca.trim()) out = out.filter(c=>c.nome.toLowerCase().includes(busca.toLowerCase()));
+    return out.sort((a,b)=>a.nome.localeCompare(b.nome));
+  },[clientes, busca]);
+
+  if (editando){
+    return <FormClienteUAN cliente={editando} onSalvar={(c)=>{salvarCliente(c); setEditando(null);}} onCancelar={()=>setEditando(null)} />;
+  }
+
+  return (
+    <div className="fade-in kg-card p-4">
+      <div className="flex flex-wrap gap-2 mb-4">
+        <input className="kg-input flex-1 min-w-[200px]" placeholder="Buscar cliente..." value={busca} onChange={e=>setBusca(e.target.value)} />
+        <button className="kg-btn-gold flex items-center gap-1.5" onClick={()=>setEditando(clienteUANVazio())}><Icone nome="mais" className="w-4 h-4" />Novo cliente</button>
+      </div>
+      <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
+        {lista.map(c=>(
+          <div key={c.id} className="kg-card kg-card-hover p-4 cursor-pointer" onClick={()=>setEditando(c)}>
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0" style={{background:"#f1ede0"}}>
+                  <Icone nome="empresa" className="w-4 h-4" style={{color:"var(--navy)"}} />
+                </div>
+                <div>
+                  <div className="font-semibold serif" style={{color:"var(--navy)"}}>{c.nome}</div>
+                  <div className="text-[11px] text-stone-500">{c.tipo}</div>
+                </div>
+              </div>
+              <button className="text-xs text-red-600" onClick={(e)=>{e.stopPropagation(); if(confirm("Excluir cliente "+c.nome+"?")) excluirCliente(c.id);}}>excluir</button>
+            </div>
+            {c.contato && <div className="text-xs text-stone-500 mt-2">{c.contato}</div>}
+          </div>
+        ))}
+        {lista.length===0 && <div className="text-stone-400 text-sm py-8 col-span-3 text-center">Nenhum cliente cadastrado ainda. No contexto de UAN, geralmente são empresas, escolas, restaurantes — os locais que você atende.</div>}
+      </div>
+    </div>
+  );
+}
+
+function FormClienteUAN({cliente, onSalvar, onCancelar}){
+  const [f, setF] = useState(cliente);
+  useEffect(()=>setF(cliente),[cliente]);
+  const set = (k,v)=>setF(prev=>({...prev,[k]:v}));
+  return (
+    <div className="fade-in max-w-xl kg-card p-5">
+      <div className="font-semibold mb-4 serif text-lg" style={{color:"var(--navy)"}}>{f.id ? "Editar cliente" : "Novo cliente"}</div>
+      <div className="grid sm:grid-cols-2 gap-3 mb-4">
+        <input className="kg-input sm:col-span-2" placeholder="Nome do cliente (empresa, escola...)" value={f.nome} onChange={e=>set("nome",e.target.value)} />
+        <div>
+          <label className="text-[11px] text-stone-500">Tipo</label>
+          <select className="kg-input" value={f.tipo} onChange={e=>set("tipo",e.target.value)}>
+            <option>Empresa</option><option>Escola</option><option>Restaurante</option><option>Hospital</option><option>Outro</option>
+          </select>
+        </div>
+        <div>
+          <label className="text-[11px] text-stone-500">Contato</label>
+          <input className="kg-input" value={f.contato} onChange={e=>set("contato",e.target.value)} />
+        </div>
+        <input className="kg-input sm:col-span-2" placeholder="Endereço" value={f.endereco} onChange={e=>set("endereco",e.target.value)} />
+        <textarea className="kg-input sm:col-span-2" placeholder="Observações" rows="3" value={f.observacoes} onChange={e=>set("observacoes",e.target.value)} />
+      </div>
+      <div className="flex gap-2">
+        <button className="kg-btn-gold" onClick={()=>{ if(f.nome.trim()) onSalvar(f); }}>Salvar cliente</button>
+        <button className="kg-btn-ghost" onClick={onCancelar}>Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
+function Estoque({itens, clientes, movimentacoes, salvarItem, excluirItem, registrarMovimentacao}){
+  const [editando, setEditando] = useState(null);
+  const [busca, setBusca] = useState("");
+  const lista = useMemo(()=>{
+    let out = itens;
+    if (busca.trim()) out = out.filter(i=>i.nome.toLowerCase().includes(busca.toLowerCase()));
+    return out.sort((a,b)=>a.nome.localeCompare(b.nome));
+  },[itens, busca]);
+
+  if (editando){
+    return <FormItemEstoque item={editando} clientes={clientes} movimentacoes={movimentacoes}
+      onSalvar={(i)=>{salvarItem(i); setEditando(null);}} onCancelar={()=>setEditando(null)}
+      registrarMovimentacao={registrarMovimentacao} />;
+  }
+
+  return (
+    <div className="fade-in kg-card p-4">
+      <div className="flex flex-wrap gap-2 mb-4">
+        <input className="kg-input flex-1 min-w-[200px]" placeholder="Buscar item..." value={busca} onChange={e=>setBusca(e.target.value)} />
+        <button className="kg-btn-gold flex items-center gap-1.5" onClick={()=>setEditando(itemEstoqueVazio())}><Icone nome="mais" className="w-4 h-4" />Novo item</button>
+      </div>
+      <table className="kg-table">
+        <thead><tr><th>Item</th><th>Categoria</th><th>Estoque atual</th><th>Consumo médio/semana</th><th>Situação</th><th></th></tr></thead>
+        <tbody>
+          {lista.map(it=>{
+            const atual = parseFloat(it.estoqueAtual)||0;
+            const consumo = parseFloat(it.consumoMedioSemanal)||0;
+            const baixo = consumo>0 && atual < consumo;
+            return (
+              <tr key={it.id} className="cursor-pointer" onClick={()=>setEditando(it)}>
+                <td className="font-medium">{it.nome}</td>
+                <td className="text-stone-500">{it.categoria}</td>
+                <td>{fmt(atual,1)} {it.unidade}</td>
+                <td className="text-stone-500">{fmt(consumo,1)} {it.unidade}</td>
+                <td>{baixo ? <span className="kg-badge" style={{background:"#fbe4e0",color:"var(--bad)"}}>repor</span> : <span className="kg-badge" style={{background:"#e6efe2",color:"var(--good)"}}>ok</span>}</td>
+                <td className="text-right"><button className="text-xs text-red-600" onClick={(e)=>{e.stopPropagation(); if(confirm("Excluir "+it.nome+"?")) excluirItem(it.id);}}>excluir</button></td>
+              </tr>
+            );
+          })}
+          {lista.length===0 && <tr><td colSpan="6" className="text-center text-stone-400 py-6">Nenhum item no estoque ainda.</td></tr>}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function FormItemEstoque({item, clientes, movimentacoes, onSalvar, onCancelar, registrarMovimentacao}){
+  const [f, setF] = useState(item);
+  useEffect(()=>setF(item),[item]);
+  const set = (k,v)=>setF(prev=>({...prev,[k]:v}));
+  const [qtdMov, setQtdMov] = useState("");
+  const [obsMov, setObsMov] = useState("");
+
+  const historico = useMemo(()=>{
+    if (!f.id) return [];
+    return movimentacoes.filter(m=>m.itemId===f.id).sort((a,b)=>new Date(b.data)-new Date(a.data)).slice(0,10);
+  },[movimentacoes, f.id]);
+
+  const mediaReal = f.id ? mediaConsumoReal(f.id, movimentacoes) : null;
+
+  const mover = (tipo)=>{
+    if (!f.id){ alert("Salve o item primeiro pra poder registrar movimentações."); return; }
+    if (!qtdMov || parseFloat(qtdMov)<=0) return;
+    registrarMovimentacao(f, tipo, qtdMov, obsMov);
+    setF(prev=>({...prev, estoqueAtual: String(tipo==="entrada" ? (parseFloat(prev.estoqueAtual)||0)+parseFloat(qtdMov) : Math.max(0,(parseFloat(prev.estoqueAtual)||0)-parseFloat(qtdMov)))}));
+    setQtdMov(""); setObsMov("");
+  };
+
+  return (
+    <div className="fade-in grid lg:grid-cols-5 gap-5">
+      <div className="lg:col-span-3 kg-card p-5">
+        <div className="font-semibold mb-4 serif text-lg" style={{color:"var(--navy)"}}>{f.id ? "Editar item" : "Novo item de estoque"}</div>
+        <div className="grid sm:grid-cols-2 gap-3 mb-3">
+          <input className="kg-input sm:col-span-2" placeholder="Nome do item (ex: Arroz tipo 1)" value={f.nome} onChange={e=>set("nome",e.target.value)} />
+          <div>
+            <label className="text-[11px] text-stone-500">Categoria</label>
+            <select className="kg-input" value={f.categoria} onChange={e=>set("categoria",e.target.value)}>
+              {CATEGORIAS_PRODUTO.map(c=><option key={c}>{c}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-[11px] text-stone-500">Unidade</label>
+            <select className="kg-input" value={f.unidade} onChange={e=>set("unidade",e.target.value)}>
+              {UNIDADES_ESTOQUE.map(u=><option key={u}>{u}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-[11px] text-stone-500">Estoque atual</label>
+            <input type="number" step="any" className="kg-input" value={f.estoqueAtual} onChange={e=>set("estoqueAtual",e.target.value)} />
+          </div>
+          <div>
+            <label className="text-[11px] text-stone-500">Consumo médio por semana {mediaReal!=null && <span className="text-stone-400">(real últimas 4 sem.: {fmt(mediaReal,1)})</span>}</label>
+            <input type="number" step="any" className="kg-input" value={f.consumoMedioSemanal} onChange={e=>set("consumoMedioSemanal",e.target.value)} />
+          </div>
+        </div>
+        <div className="text-[11px] text-stone-400 mb-4">Ex: se o mínimo de arroz usado é 2 fardos de 18kg por semana, coloque 36 aqui — o sistema avisa quando o estoque cai abaixo disso e já sugere a compra.</div>
+
+        <div className="flex gap-2 mb-4">
+          <button className="kg-btn-gold" onClick={()=>{ if(f.nome.trim()) onSalvar(f); }}>Salvar item</button>
+          <button className="kg-btn-ghost" onClick={onCancelar}>Cancelar</button>
+        </div>
+
+        {f.id && (
+          <div className="border-t pt-4" style={{borderColor:"var(--line)"}}>
+            <div className="text-xs font-semibold text-stone-500 mb-2">REGISTRAR MOVIMENTAÇÃO</div>
+            <div className="flex flex-wrap gap-2 mb-2">
+              <input type="number" step="any" className="kg-input w-28" placeholder="Qtd" value={qtdMov} onChange={e=>setQtdMov(e.target.value)} />
+              <input className="kg-input flex-1 min-w-[160px]" placeholder="Observação (opcional)" value={obsMov} onChange={e=>setObsMov(e.target.value)} />
+              <button className="kg-btn-ghost flex items-center gap-1.5" style={{color:"var(--good)"}} onClick={()=>mover("entrada")}><Icone nome="entrada" className="w-3.5 h-3.5" />Entrada</button>
+              <button className="kg-btn-ghost flex items-center gap-1.5" style={{color:"var(--bad)"}} onClick={()=>mover("saida")}><Icone nome="saida" className="w-3.5 h-3.5" />Saída</button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="lg:col-span-2 kg-card p-5">
+        <div className="text-xs font-semibold text-stone-500 mb-2">ÚLTIMAS MOVIMENTAÇÕES</div>
+        <div className="space-y-1.5">
+          {historico.map(m=>(
+            <div key={m.id} className="flex items-center justify-between text-sm border-b border-stone-100 pb-1.5">
+              <span className="flex items-center gap-1.5">
+                <Icone nome={m.tipo==="entrada"?"entrada":"saida"} className="w-3.5 h-3.5" style={{color: m.tipo==="entrada"?"var(--good)":"var(--bad)"}} />
+                {new Date(m.data).toLocaleDateString("pt-BR")}
+              </span>
+              <span className="font-semibold">{m.tipo==="entrada"?"+":"−"}{fmt(m.quantidade,1)}</span>
+            </div>
+          ))}
+          {historico.length===0 && <div className="text-xs text-stone-400">Nenhuma movimentação registrada ainda.</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ComprasUAN({itens}){
+  const lista = useMemo(()=>gerarListaComprasUAN(itens), [itens]);
+  return (
+    <div className="fade-in kg-card p-4">
+      <div className="font-semibold mb-1 flex items-center gap-2"><Icone nome="carrinho" className="w-4 h-4" style={{color:"var(--gold)"}} />Lista de compras sugerida</div>
+      <div className="text-xs text-stone-500 mb-4">Calculada a partir do estoque atual comparado com o consumo médio semanal que você cadastrou em cada item.</div>
+      <table className="kg-table">
+        <thead><tr><th>Item</th><th>Estoque atual</th><th>Consumo médio/semana</th><th>Comprar</th></tr></thead>
+        <tbody>
+          {lista.map(it=>(
+            <tr key={it.id}>
+              <td className="font-medium">{it.nome}</td>
+              <td className="text-stone-500">{fmt(parseFloat(it.estoqueAtual)||0,1)} {it.unidade}</td>
+              <td className="text-stone-500">{fmt(parseFloat(it.consumoMedioSemanal)||0,1)} {it.unidade}</td>
+              <td className="font-semibold" style={{color:"var(--bad)"}}>{fmt(it.sugestao,1)} {it.unidade}</td>
+            </tr>
+          ))}
+          {lista.length===0 && <tr><td colSpan="4" className="text-center text-stone-400 py-8">Nenhuma compra necessária no momento — todos os itens estão dentro do consumo médio semanal cadastrado.</td></tr>}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function Desperdicio({itens, desperdicios, salvarDesperdicio, excluirDesperdicio}){
+  const [itemId, setItemId] = useState("");
+  const [quantidade, setQuantidade] = useState("");
+  const [motivo, setMotivo] = useState("");
+  const [mesFiltro, setMesFiltro] = useState(()=>new Date().toISOString().slice(0,7));
+  const canvasRef = useRef(null);
+  const chartRef = useRef(null);
+
+  const doMes = useMemo(()=>{
+    return desperdicios.filter(d=>d.data && d.data.startsWith(mesFiltro)).sort((a,b)=>new Date(b.data)-new Date(a.data));
+  },[desperdicios, mesFiltro]);
+
+  const registrar = ()=>{
+    const item = itens.find(i=>i.id===itemId);
+    if (!item || !quantidade || parseFloat(quantidade)<=0) return;
+    salvarDesperdicio({itemId, nomeItem:item.nome, unidade:item.unidade, quantidade:parseFloat(quantidade), motivo, data:new Date().toISOString()});
+    setQuantidade(""); setMotivo("");
+  };
+
+  useEffect(()=>{
+    if (!canvasRef.current || typeof Chart==="undefined") return;
+    const porDia = {};
+    doMes.forEach(d=>{
+      const dia = d.data.slice(8,10);
+      porDia[dia] = (porDia[dia]||0) + (parseFloat(d.quantidade)||0);
+    });
+    const dias = Object.keys(porDia).sort();
+    if (chartRef.current) chartRef.current.destroy();
+    chartRef.current = new Chart(canvasRef.current, {
+      type: "bar",
+      data: { labels: dias.map(d=>"dia "+d), datasets: [{ label:"Desperdício", data: dias.map(d=>porDia[d]), backgroundColor:"#B8976A" }] },
+      options: { responsive:true, plugins:{legend:{display:false}}, scales:{y:{beginAtZero:true}} }
+    });
+    return ()=>{ if(chartRef.current) chartRef.current.destroy(); };
+  },[doMes]);
+
+  const totalMes = doMes.reduce((s,d)=>s+(parseFloat(d.quantidade)||0),0);
+
+  return (
+    <div className="fade-in space-y-4">
+      <div className="kg-card p-4">
+        <div className="font-semibold mb-3">Registrar desperdício de hoje</div>
+        <div className="flex flex-wrap gap-2">
+          <select className="kg-input flex-1 min-w-[160px]" value={itemId} onChange={e=>setItemId(e.target.value)}>
+            <option value="">Selecione o item...</option>
+            {itens.slice().sort((a,b)=>a.nome.localeCompare(b.nome)).map(i=><option key={i.id} value={i.id}>{i.nome}</option>)}
+          </select>
+          <input type="number" step="any" className="kg-input w-28" placeholder="Qtd" value={quantidade} onChange={e=>setQuantidade(e.target.value)} />
+          <input className="kg-input flex-1 min-w-[160px]" placeholder="Motivo (opcional)" value={motivo} onChange={e=>setMotivo(e.target.value)} />
+          <button className="kg-btn-gold" onClick={registrar}>Registrar</button>
+        </div>
+      </div>
+
+      <div className="kg-card p-4">
+        <div className="flex items-center justify-between mb-3">
+          <div className="font-semibold flex items-center gap-2"><Icone nome="grafico" className="w-4 h-4" style={{color:"var(--gold)"}} />Desperdício do mês</div>
+          <input type="month" className="kg-input w-auto" value={mesFiltro} onChange={e=>setMesFiltro(e.target.value)} />
+        </div>
+        {doMes.length===0 ? (
+          <div className="text-sm text-stone-400 py-6 text-center">Nenhum desperdício registrado neste mês.</div>
+        ) : (
+          <>
+            <canvas ref={canvasRef} height="90"></canvas>
+            <div className="text-sm text-stone-500 mt-3">Total do mês: <strong className="text-stone-700">{fmt(totalMes,1)}</strong> (unidades somadas entre itens diferentes — veja os detalhes abaixo)</div>
+          </>
+        )}
+      </div>
+
+      <div className="kg-card p-4">
+        <div className="text-xs font-semibold text-stone-500 mb-2">REGISTROS DO MÊS</div>
+        <div className="space-y-1.5">
+          {doMes.map(d=>(
+            <div key={d.id} className="flex items-center justify-between text-sm border-b border-stone-100 pb-1.5">
+              <span>{new Date(d.data).toLocaleDateString("pt-BR")} · {d.nomeItem} {d.motivo && <span className="text-stone-400">— {d.motivo}</span>}</span>
+              <span className="flex items-center gap-2">
+                <strong>{fmt(d.quantidade,1)} {d.unidade}</strong>
+                <button className="text-xs text-red-600" onClick={()=>excluirDesperdicio(d.id)}>excluir</button>
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ======================================================================
+   CONFIGURAÇÕES — perfil e módulos ativos
+====================================================================== */
+function Configuracoes({usuario, perfil, salvarModulos}){
+  const modulos = perfil.modulos || {clinico:true, uan:false};
+  const [clinico, setClinico] = useState(modulos.clinico);
+  const [uan, setUan] = useState(modulos.uan);
+  const [salvando, setSalvando] = useState(false);
+  const [salvo, setSalvo] = useState(false);
+
+  const salvar = async ()=>{
+    if (!clinico && !uan) return;
+    setSalvando(true);
+    await salvarModulos({clinico, uan});
+    setSalvando(false);
+    setSalvo(true);
+    setTimeout(()=>setSalvo(false), 2000);
+  };
+
+  return (
+    <div className="fade-in max-w-lg space-y-4">
+      <div className="kg-card p-5">
+        <div className="font-semibold mb-3">Seu perfil</div>
+        <div className="text-sm text-stone-600">
+          <div className="mb-1"><span className="text-stone-400">Nome:</span> {perfil.nome}</div>
+          <div className="mb-1"><span className="text-stone-400">E-mail:</span> {usuario.email}</div>
+          <div><span className="text-stone-400">CRN:</span> {perfil.crn || "— não informado —"}</div>
+        </div>
+      </div>
+      <div className="kg-card p-5">
+        <div className="font-semibold mb-3">Módulos ativos</div>
+        <div className="flex gap-2 mb-3">
+          <label className={"flex-1 border rounded-lg px-3 py-3 text-sm cursor-pointer flex items-center gap-2 " + (clinico?"":"text-stone-400")} style={{borderColor: clinico?"var(--gold)":"var(--line)", background: clinico?"#faf6ee":"#fff"}}>
+            <input type="checkbox" checked={clinico} onChange={e=>setClinico(e.target.checked)} />
+            <Icone nome="pacientes" className="w-4 h-4" /> Clínico
+          </label>
+          <label className={"flex-1 border rounded-lg px-3 py-3 text-sm cursor-pointer flex items-center gap-2 " + (uan?"":"text-stone-400")} style={{borderColor: uan?"var(--gold)":"var(--line)", background: uan?"#faf6ee":"#fff"}}>
+            <input type="checkbox" checked={uan} onChange={e=>setUan(e.target.checked)} />
+            <Icone nome="empresa" className="w-4 h-4" /> UAN
+          </label>
+        </div>
+        <button disabled={salvando} className="kg-btn-gold" onClick={salvar}>{salvando?"Salvando...":"Salvar"}</button>
+        {salvo && <span className="text-xs ml-3" style={{color:"var(--good)"}}>Salvo!</span>}
+      </div>
+    </div>
+  );
+}
+
+/* ======================================================================
    ADMINISTRAÇÃO — lista de nutricionistas cadastrados na plataforma
 ====================================================================== */
 function Admin(){
@@ -1053,7 +1556,7 @@ function Admin(){
 /* ======================================================================
    DASHBOARD
 ====================================================================== */
-function Dashboard({produtos, fichas, cardapios, pacientes, tacoData, loadingTaco, produtosIndex, tacoIndex, customIndex, setTab}){
+function Dashboard({produtos, fichas, cardapios, pacientes, itensEstoque, clientesUAN, modulos, tacoData, loadingTaco, produtosIndex, tacoIndex, customIndex, setTab}){
   const custoMedioPorcao = useMemo(()=>{
     if (!fichas.length) return null;
     const vals = fichas.map(f=>calcularFicha(f, produtosIndex, tacoIndex, customIndex).custoPorcao);
@@ -1061,9 +1564,15 @@ function Dashboard({produtos, fichas, cardapios, pacientes, tacoData, loadingTac
   },[fichas, produtosIndex, tacoIndex, customIndex]);
 
   const stats = [
-    {label:"Pacientes", value: (pacientes||[]).length, hint:"cadastrados na sua base", icone:"pacientes", tab:"pacientes"},
-    {label:"Cardápios criados", value: (cardapios||[]).filter(c=>!c.isModelo).length, hint:"planos alimentares montados", icone:"cardapios", tab:"cardapios"},
-    {label:"Fichas técnicas", value: fichas.length, hint:"preparações prontas para uso", icone:"fichas", tab:"fichas"},
+    ...(modulos?.clinico ? [
+      {label:"Pacientes", value: (pacientes||[]).length, hint:"cadastrados na sua base", icone:"pacientes", tab:"pacientes"},
+      {label:"Cardápios criados", value: (cardapios||[]).filter(c=>!c.isModelo).length, hint:"planos alimentares montados", icone:"cardapios", tab:"cardapios"},
+      {label:"Fichas técnicas", value: fichas.length, hint:"preparações prontas para uso", icone:"fichas", tab:"fichas"},
+    ] : []),
+    ...(modulos?.uan ? [
+      {label:"Clientes UAN", value: (clientesUAN||[]).length, hint:"empresas atendidas", icone:"empresa", tab:"clientesUAN"},
+      {label:"Itens em falta", value: gerarListaComprasUAN(itensEstoque||[]).length, hint:"abaixo do consumo médio", icone:"carrinho", tab:"comprasUAN"},
+    ] : []),
     {label:"Alimentos na base TACO", value: loadingTaco?"…":tacoData.length, hint:"4ª edição, NEPA/UNICAMP", icone:"alimentos", tab:"alimentos"},
   ];
 
