@@ -562,11 +562,11 @@ function gerarListaCompras(cardapio, tacoIndex, customIndex){
 const UNIDADES_ESTOQUE = ["kg","g","L","ml","fardo","pacote","caixa","dz","un"];
 
 function clienteUANVazio(){
-  return {nome:"", tipo:"Empresa", contato:"", endereco:"", observacoes:""};
+  return {nome:"", tipo:"Empresa", contato:"", endereco:"", observacoes:"", linkDelegado:false};
 }
 
-function itemEstoqueVazio(){
-  return {nome:"", categoria:"Mercado / Mercearia", unidade:"kg", estoqueAtual:"0", consumoMedioSemanal:"0", clienteId:""};
+function itemEstoqueVazio(clienteId){
+  return {nome:"", categoria:"Mercado / Mercearia", unidade:"kg", estoqueAtual:"0", consumoMedioSemanal:"0", clienteId: clienteId||""};
 }
 
 // média real de saída por semana, a partir do histórico de movimentações (últimas N semanas)
@@ -627,6 +627,15 @@ function App(){
       Este aplicativo precisa do Firebase configurado para funcionar — login e a base compartilhada entre nutricionistas exigem conexão com o banco de dados.
     </div>;
   }
+
+  // link delegado: a empresa acessa o estoque dela sem precisar de conta/login
+  // (o link usa o próprio ID do cliente — só funciona se o nutricionista ativou
+  // "link delegado" para esse cliente especificamente)
+  const clienteIdPortal = new URLSearchParams(window.location.search).get("estoque");
+  if (clienteIdPortal){
+    return <PortalCliente clienteId={clienteIdPortal} />;
+  }
+
   if (carregandoAuth){
     return <div className="min-h-screen flex items-center justify-center text-sm text-stone-500">Carregando...</div>;
   }
@@ -638,6 +647,18 @@ function App(){
   }
 
   const isAdmin = ADMIN_EMAILS.includes(usuario.email);
+  const modulos = perfil.modulos || {clinico:false, uan:false};
+  if (!isAdmin && !modulos.clinico && !modulos.uan){
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6" style={{background:"var(--navy)"}}>
+        <div className="kg-card p-6 max-w-sm text-center">
+          <div className="font-semibold mb-2 serif text-lg" style={{color:"var(--navy)"}}>Conta criada com sucesso</div>
+          <div className="text-sm text-stone-500 mb-4">O administrador da plataforma ainda precisa liberar seu acesso (Clínico e/ou UAN). Assim que isso acontecer, é só recarregar a página.</div>
+          <button className="kg-btn-ghost" onClick={()=>auth.signOut()}>Sair</button>
+        </div>
+      </div>
+    );
+  }
   return <AppLogado usuario={usuario} perfil={perfil} isAdmin={isAdmin} onPerfilAtualizado={setPerfil} />;
 }
 
@@ -662,7 +683,7 @@ function Auth({onCadastroCompleto}){
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState("");
   const [mensagem, setMensagem] = useState("");
-  const [f, setF] = useState({nome:"", crn:"", email:"", senha:"", confirmarSenha:"", modulos:{clinico:true, uan:false}});
+  const [f, setF] = useState({nome:"", crn:"", email:"", senha:"", confirmarSenha:""});
   const set = (k,v)=>setF(prev=>({...prev,[k]:v}));
 
   const entrar = async ()=>{
@@ -677,13 +698,13 @@ function Auth({onCadastroCompleto}){
     setErro("");
     if (!f.nome.trim() || !f.email.trim() || !f.senha){ setErro("Preencha nome, e-mail e senha."); return; }
     if (f.senha !== f.confirmarSenha){ setErro("As senhas não coincidem."); return; }
-    if (!f.modulos.clinico && !f.modulos.uan){ setErro("Selecione ao menos um módulo."); return; }
     setCarregando(true);
     try {
       const cred = await auth.createUserWithEmailAndPassword(f.email.trim(), f.senha);
+      const ehAdmin = ADMIN_EMAILS.includes(f.email.trim());
       const perfil = {
         nome: f.nome.trim(), crn: f.crn.trim(), email: f.email.trim(),
-        modulos: f.modulos,
+        modulos: ehAdmin ? {clinico:true, uan:true} : {clinico:false, uan:false},
         criadoEm: new Date().toISOString()
       };
       perfilRecemCriado = {uid: cred.user.uid, perfil};
@@ -723,20 +744,7 @@ function Auth({onCadastroCompleto}){
             <>
               <input className="kg-input mb-2" placeholder="Nome completo" value={f.nome} onChange={e=>set("nome",e.target.value)} />
               <input className="kg-input mb-2" placeholder="CRN (registro profissional — deixe em branco se não for nutricionista)" value={f.crn} onChange={e=>set("crn",e.target.value)} />
-              <div className="mb-2">
-                <label className="text-[11px] text-stone-500 block mb-1">Módulos que você usa</label>
-                <div className="flex gap-2">
-                  <label className={"flex-1 border rounded-lg px-3 py-2 text-sm cursor-pointer flex items-center gap-2 " + (f.modulos.clinico?"":"text-stone-400")} style={{borderColor: f.modulos.clinico?"var(--gold)":"var(--line)", background: f.modulos.clinico?"#faf6ee":"#fff"}}>
-                    <input type="checkbox" checked={f.modulos.clinico} onChange={e=>set("modulos",{...f.modulos, clinico:e.target.checked})} />
-                    Clínico
-                  </label>
-                  <label className={"flex-1 border rounded-lg px-3 py-2 text-sm cursor-pointer flex items-center gap-2 " + (f.modulos.uan?"":"text-stone-400")} style={{borderColor: f.modulos.uan?"var(--gold)":"var(--line)", background: f.modulos.uan?"#faf6ee":"#fff"}}>
-                    <input type="checkbox" checked={f.modulos.uan} onChange={e=>set("modulos",{...f.modulos, uan:e.target.checked})} />
-                    UAN
-                  </label>
-                </div>
-                <div className="text-[10px] text-stone-400 mt-1">Dá pra ativar os dois, ou mudar depois em Configurações.</div>
-              </div>
+              <div className="text-[11px] text-stone-400 mb-2">Depois de criar a conta, o administrador da plataforma libera o(s) módulo(s) que você vai usar (Clínico e/ou UAN).</div>
             </>
           )}
           <input className="kg-input mb-2" type="email" placeholder="E-mail" value={f.email} onChange={e=>set("email",e.target.value)} />
@@ -768,7 +776,8 @@ function CompletarPerfil({usuario, onCompleto}){
   const salvar = async ()=>{
     if (!f.nome.trim()) return;
     setSalvando(true);
-    const perfil = {nome:f.nome.trim(), crn:f.crn.trim(), email:usuario.email, modulos:{clinico:true, uan:false}, criadoEm:new Date().toISOString()};
+    const ehAdmin = ADMIN_EMAILS.includes(usuario.email);
+    const perfil = {nome:f.nome.trim(), crn:f.crn.trim(), email:usuario.email, modulos: ehAdmin?{clinico:true,uan:true}:{clinico:false, uan:false}, criadoEm:new Date().toISOString()};
     await db.collection("nutricionistas").doc(usuario.uid).set(perfil);
     onCompleto(perfil);
     setSalvando(false);
@@ -841,6 +850,9 @@ function AppLogado({usuario, perfil, isAdmin, onPerfilAtualizado}){
   const pacientesIndex = useMemo(()=>{
     const idx = {}; pacientes.forEach(p=>idx[p.id]=p); return idx;
   },[pacientes]);
+  const clientesUANIndex = useMemo(()=>{
+    const idx = {}; clientesUAN.forEach(c=>idx[c.id]=c); return idx;
+  },[clientesUAN]);
 
   // ---- persistência (sempre com donoId = nutricionista logado) ----
   const salvarProduto = async (produto)=>{
@@ -909,7 +921,7 @@ function AppLogado({usuario, perfil, isAdmin, onPerfilAtualizado}){
     const qtd = parseFloat(quantidade)||0;
     if (qtd<=0) return;
     await db.collection("movimentacoesEstoque").add({
-      itemId:item.id, tipo, quantidade:qtd, data:new Date().toISOString(), observacao:observacao||"", donoId:usuario.uid
+      itemId:item.id, clienteId:item.clienteId||"", tipo, quantidade:qtd, data:new Date().toISOString(), observacao:observacao||"", donoId:usuario.uid
     });
     const atual = parseFloat(item.estoqueAtual)||0;
     const novo = tipo==="entrada" ? atual+qtd : Math.max(0, atual-qtd);
@@ -920,12 +932,6 @@ function AppLogado({usuario, perfil, isAdmin, onPerfilAtualizado}){
     await db.collection("desperdicios").add({...registro, donoId:usuario.uid});
   };
   const excluirDesperdicio = async (id)=>{ await db.collection("desperdicios").doc(id).delete(); };
-
-  const salvarModulos = async (novosModulos)=>{
-    const {id, ...rest} = perfil;
-    await db.collection("nutricionistas").doc(usuario.uid).set({...rest, modulos:novosModulos});
-    onPerfilAtualizado?.({...perfil, modulos:novosModulos});
-  };
 
   const TABS_CLINICO = [
     {k:"pacientes", label:"Pacientes", icone:"pacientes"},
@@ -1020,10 +1026,10 @@ function AppLogado({usuario, perfil, isAdmin, onPerfilAtualizado}){
           {tab==="fichas" && <FichasTecnicas fichas={fichas} produtos={produtos} tacoIndex={tacoIndex} customIndex={customIndex} produtosIndex={produtosIndex} salvarFicha={salvarFicha} excluirFicha={excluirFicha} />}
           {tab==="cardapios" && <Cardapios cardapios={cardapios} pacientes={pacientes} pacientesIndex={pacientesIndex} tacoData={tacoData} customFoods={customFoods} tacoIndex={tacoIndex} customIndex={customIndex} loadingTaco={loadingTaco} salvarCardapio={salvarCardapio} excluirCardapio={excluirCardapio} perfil={perfil} />}
           {tab==="clientesUAN" && <ClientesUAN clientes={clientesUAN} salvarCliente={salvarClienteUAN} excluirCliente={excluirClienteUAN} />}
-          {tab==="estoque" && <Estoque itens={itensEstoque} clientes={clientesUAN} movimentacoes={movimentacoes} salvarItem={salvarItemEstoque} excluirItem={excluirItemEstoque} registrarMovimentacao={registrarMovimentacao} />}
-          {tab==="comprasUAN" && <ComprasUAN itens={itensEstoque} />}
+          {tab==="estoque" && <Estoque itens={itensEstoque} clientes={clientesUAN} movimentacoes={movimentacoes} salvarItem={salvarItemEstoque} excluirItem={excluirItemEstoque} registrarMovimentacao={registrarMovimentacao} setTab={setTab} />}
+          {tab==="comprasUAN" && <ComprasUAN itens={itensEstoque} clientesIndex={clientesUANIndex} />}
           {tab==="desperdicio" && <Desperdicio itens={itensEstoque} desperdicios={desperdicios} salvarDesperdicio={salvarDesperdicio} excluirDesperdicio={excluirDesperdicio} />}
-          {tab==="config" && <Configuracoes usuario={usuario} perfil={perfil} salvarModulos={salvarModulos} />}
+          {tab==="config" && <Configuracoes usuario={usuario} perfil={perfil} />}
           {tab==="admin" && isAdmin && <Admin />}
         </main>
       </div>
@@ -1198,6 +1204,14 @@ function FormClienteUAN({cliente, onSalvar, onCancelar}){
   const [f, setF] = useState(cliente);
   useEffect(()=>setF(cliente),[cliente]);
   const set = (k,v)=>setF(prev=>({...prev,[k]:v}));
+  const [copiado, setCopiado] = useState(false);
+
+  const link = f.id ? `${window.location.origin}${window.location.pathname}?estoque=${f.id}` : null;
+  const copiarLink = ()=>{
+    navigator.clipboard.writeText(link);
+    setCopiado(true); setTimeout(()=>setCopiado(false), 1800);
+  };
+
   return (
     <div className="fade-in max-w-xl kg-card p-5">
       <div className="font-semibold mb-4 serif text-lg" style={{color:"var(--navy)"}}>{f.id ? "Editar cliente" : "Novo cliente"}</div>
@@ -1216,6 +1230,23 @@ function FormClienteUAN({cliente, onSalvar, onCancelar}){
         <input className="kg-input sm:col-span-2" placeholder="Endereço" value={f.endereco} onChange={e=>set("endereco",e.target.value)} />
         <textarea className="kg-input sm:col-span-2" placeholder="Observações" rows="3" value={f.observacoes} onChange={e=>set("observacoes",e.target.value)} />
       </div>
+
+      {f.id && (
+        <div className="rounded-lg p-3 mb-4" style={{background:"#f1ede0"}}>
+          <label className="flex items-center gap-2 text-sm cursor-pointer mb-2">
+            <input type="checkbox" checked={!!f.linkDelegado} onChange={e=>{ set("linkDelegado", e.target.checked); }} />
+            <strong>Delegar gestão de estoque para este cliente</strong>
+          </label>
+          <div className="text-xs text-stone-500 mb-2">Com isso ativado, quem tiver o link abaixo consegue ver e atualizar o estoque <em>só deste cliente</em> — sem precisar de login. Lembre de clicar em "Salvar cliente" depois de ativar.</div>
+          {f.linkDelegado && (
+            <div className="flex gap-2">
+              <input className="kg-input text-xs" readOnly value={link} onClick={e=>e.target.select()} />
+              <button className="kg-btn-ghost whitespace-nowrap" onClick={copiarLink}>{copiado?"Copiado!":"Copiar link"}</button>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="flex gap-2">
         <button className="kg-btn-gold" onClick={()=>{ if(f.nome.trim()) onSalvar(f); }}>Salvar cliente</button>
         <button className="kg-btn-ghost" onClick={onCancelar}>Cancelar</button>
@@ -1224,14 +1255,109 @@ function FormClienteUAN({cliente, onSalvar, onCancelar}){
   );
 }
 
-function Estoque({itens, clientes, movimentacoes, salvarItem, excluirItem, registrarMovimentacao}){
+// Portal público do cliente — acessado sem login, só pelo link delegado.
+// Mostra e permite atualizar somente o estoque do cliente correspondente.
+function PortalCliente({clienteId}){
+  const [carregando, setCarregando] = useState(true);
+  const [erro, setErro] = useState("");
+  const [cliente, setCliente] = useState(null);
+  const [itens, setItens] = useState([]);
+  const [movs, setMovs] = useState([]);
+
+  useEffect(()=>{
+    let unsubItens = null, unsubMovs = null;
+    (async ()=>{
+      try {
+        await auth.signInAnonymously();
+        const doc = await db.collection("clientesUAN").doc(clienteId).get();
+        if (!doc.exists || !doc.data().linkDelegado){
+          setErro("Este link não é válido ou foi desativado pelo nutricionista.");
+          setCarregando(false);
+          return;
+        }
+        setCliente({id:doc.id, ...doc.data()});
+        unsubItens = db.collection("itensEstoque").where("clienteId","==",clienteId).onSnapshot(snap=>{
+          setItens(snap.docs.map(d=>({id:d.id, ...d.data()})));
+        });
+        unsubMovs = db.collection("movimentacoesEstoque").where("clienteId","==",clienteId).onSnapshot(snap=>{
+          setMovs(snap.docs.map(d=>({id:d.id, ...d.data()})));
+        });
+        setCarregando(false);
+      } catch(e){
+        console.error(e);
+        setErro("Não foi possível abrir o estoque. Verifique o link com o seu nutricionista.");
+        setCarregando(false);
+      }
+    })();
+    return ()=>{ if(unsubItens) unsubItens(); if(unsubMovs) unsubMovs(); };
+  },[clienteId]);
+
+  const registrarMovimentacao = async (item, tipo, quantidade)=>{
+    const qtd = parseFloat(quantidade)||0;
+    if (qtd<=0) return;
+    await db.collection("movimentacoesEstoque").add({
+      itemId:item.id, clienteId, tipo, quantidade:qtd, data:new Date().toISOString(), observacao:"", donoId:cliente.donoId
+    });
+    const atual = parseFloat(item.estoqueAtual)||0;
+    const novo = tipo==="entrada" ? atual+qtd : Math.max(0, atual-qtd);
+    await db.collection("itensEstoque").doc(item.id).set({...item, estoqueAtual:String(novo), donoId:cliente.donoId});
+  };
+
+  if (carregando) return <div className="min-h-screen flex items-center justify-center text-sm text-stone-500">Carregando...</div>;
+  if (erro) return <div className="min-h-screen flex items-center justify-center p-6 text-center text-sm text-stone-500 max-w-sm mx-auto">{erro}</div>;
+
+  return (
+    <div className="min-h-screen" style={{background:"var(--paper)"}}>
+      <header style={{background:"var(--navy)"}} className="text-white px-6 py-4">
+        <div className="serif text-lg" style={{color:"var(--gold-2)"}}>Portal de Estoque</div>
+        <div className="text-white/60 text-sm">{cliente.nome}</div>
+      </header>
+      <main className="max-w-2xl mx-auto px-5 py-6 space-y-3">
+        {itens.slice().sort((a,b)=>a.nome.localeCompare(b.nome)).map(it=>(
+          <ItemPortal key={it.id} item={it} onMovimentar={registrarMovimentacao} />
+        ))}
+        {itens.length===0 && <div className="kg-card p-6 text-center text-sm text-stone-500">Nenhum item de estoque cadastrado ainda para este cliente. Peça pro seu nutricionista cadastrar os itens.</div>}
+      </main>
+    </div>
+  );
+}
+
+function ItemPortal({item, onMovimentar}){
+  const [qtd, setQtd] = useState("");
+  const atual = parseFloat(item.estoqueAtual)||0;
+  return (
+    <div className="kg-card p-4">
+      <div className="flex items-center justify-between mb-2">
+        <div className="font-semibold">{item.nome}</div>
+        <div className="text-sm text-stone-500">{fmt(atual,1)} {item.unidade} em estoque</div>
+      </div>
+      <div className="flex gap-2">
+        <input type="number" step="any" className="kg-input w-28" placeholder="Qtd" value={qtd} onChange={e=>setQtd(e.target.value)} />
+        <button className="kg-btn-ghost flex items-center gap-1.5" style={{color:"var(--good)"}} onClick={()=>{onMovimentar(item,"entrada",qtd); setQtd("");}}><Icone nome="entrada" className="w-3.5 h-3.5" />Entrada</button>
+        <button className="kg-btn-ghost flex items-center gap-1.5" style={{color:"var(--bad)"}} onClick={()=>{onMovimentar(item,"saida",qtd); setQtd("");}}><Icone nome="saida" className="w-3.5 h-3.5" />Saída</button>
+      </div>
+    </div>
+  );
+}
+
+function Estoque({itens, clientes, movimentacoes, salvarItem, excluirItem, registrarMovimentacao, setTab}){
+  const [clienteId, setClienteId] = useState(clientes[0]?.id || "");
   const [editando, setEditando] = useState(null);
   const [busca, setBusca] = useState("");
+
+  useEffect(()=>{ if (!clienteId && clientes.length>0) setClienteId(clientes[0].id); },[clientes]);
+
   const lista = useMemo(()=>{
-    let out = itens;
+    let out = itens.filter(i=>i.clienteId===clienteId);
     if (busca.trim()) out = out.filter(i=>i.nome.toLowerCase().includes(busca.toLowerCase()));
     return out.sort((a,b)=>a.nome.localeCompare(b.nome));
-  },[itens, busca]);
+  },[itens, busca, clienteId]);
+
+  if (clientes.length===0){
+    return <div className="kg-card p-8 text-center text-sm text-stone-500">
+      O estoque é organizado por cliente. <span className="underline cursor-pointer" onClick={()=>setTab("clientesUAN")}>Cadastre um cliente primeiro</span>.
+    </div>;
+  }
 
   if (editando){
     return <FormItemEstoque item={editando} clientes={clientes} movimentacoes={movimentacoes}
@@ -1242,8 +1368,11 @@ function Estoque({itens, clientes, movimentacoes, salvarItem, excluirItem, regis
   return (
     <div className="fade-in kg-card p-4">
       <div className="flex flex-wrap gap-2 mb-4">
-        <input className="kg-input flex-1 min-w-[200px]" placeholder="Buscar item..." value={busca} onChange={e=>setBusca(e.target.value)} />
-        <button className="kg-btn-gold flex items-center gap-1.5" onClick={()=>setEditando(itemEstoqueVazio())}><Icone nome="mais" className="w-4 h-4" />Novo item</button>
+        <select className="kg-input w-auto min-w-[180px]" value={clienteId} onChange={e=>setClienteId(e.target.value)}>
+          {clientes.map(c=><option key={c.id} value={c.id}>{c.nome}</option>)}
+        </select>
+        <input className="kg-input flex-1 min-w-[180px]" placeholder="Buscar item..." value={busca} onChange={e=>setBusca(e.target.value)} />
+        <button className="kg-btn-gold flex items-center gap-1.5" onClick={()=>setEditando(itemEstoqueVazio(clienteId))}><Icone nome="mais" className="w-4 h-4" />Novo item</button>
       </div>
       <table className="kg-table">
         <thead><tr><th>Item</th><th>Categoria</th><th>Estoque atual</th><th>Consumo médio/semana</th><th>Situação</th><th></th></tr></thead>
@@ -1358,24 +1487,38 @@ function FormItemEstoque({item, clientes, movimentacoes, onSalvar, onCancelar, r
   );
 }
 
-function ComprasUAN({itens}){
-  const lista = useMemo(()=>gerarListaComprasUAN(itens), [itens]);
+function ComprasUAN({itens, clientesIndex}){
+  const [clienteId, setClienteId] = useState("");
+  const listaTodos = useMemo(()=>gerarListaComprasUAN(itens), [itens]);
+  const lista = useMemo(()=> clienteId ? listaTodos.filter(it=>it.clienteId===clienteId) : listaTodos, [listaTodos, clienteId]);
+  const clientesComItens = useMemo(()=>{
+    const ids = [...new Set(itens.map(i=>i.clienteId))];
+    return ids.map(id=>clientesIndex[id]).filter(Boolean);
+  },[itens, clientesIndex]);
+
   return (
     <div className="fade-in kg-card p-4">
-      <div className="font-semibold mb-1 flex items-center gap-2"><Icone nome="carrinho" className="w-4 h-4" style={{color:"var(--gold)"}} />Lista de compras sugerida</div>
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+        <div className="font-semibold flex items-center gap-2"><Icone nome="carrinho" className="w-4 h-4" style={{color:"var(--gold)"}} />Lista de compras sugerida</div>
+        <select className="kg-input w-auto" value={clienteId} onChange={e=>setClienteId(e.target.value)}>
+          <option value="">Todos os clientes</option>
+          {clientesComItens.map(c=><option key={c.id} value={c.id}>{c.nome}</option>)}
+        </select>
+      </div>
       <div className="text-xs text-stone-500 mb-4">Calculada a partir do estoque atual comparado com o consumo médio semanal que você cadastrou em cada item.</div>
       <table className="kg-table">
-        <thead><tr><th>Item</th><th>Estoque atual</th><th>Consumo médio/semana</th><th>Comprar</th></tr></thead>
+        <thead><tr><th>Item</th><th>Cliente</th><th>Estoque atual</th><th>Consumo médio/semana</th><th>Comprar</th></tr></thead>
         <tbody>
           {lista.map(it=>(
             <tr key={it.id}>
               <td className="font-medium">{it.nome}</td>
+              <td className="text-stone-500">{clientesIndex[it.clienteId]?.nome || "—"}</td>
               <td className="text-stone-500">{fmt(parseFloat(it.estoqueAtual)||0,1)} {it.unidade}</td>
               <td className="text-stone-500">{fmt(parseFloat(it.consumoMedioSemanal)||0,1)} {it.unidade}</td>
               <td className="font-semibold" style={{color:"var(--bad)"}}>{fmt(it.sugestao,1)} {it.unidade}</td>
             </tr>
           ))}
-          {lista.length===0 && <tr><td colSpan="4" className="text-center text-stone-400 py-8">Nenhuma compra necessária no momento — todos os itens estão dentro do consumo médio semanal cadastrado.</td></tr>}
+          {lista.length===0 && <tr><td colSpan="5" className="text-center text-stone-400 py-8">Nenhuma compra necessária no momento — todos os itens estão dentro do consumo médio semanal cadastrado.</td></tr>}
         </tbody>
       </table>
     </div>
@@ -1397,7 +1540,7 @@ function Desperdicio({itens, desperdicios, salvarDesperdicio, excluirDesperdicio
   const registrar = ()=>{
     const item = itens.find(i=>i.id===itemId);
     if (!item || !quantidade || parseFloat(quantidade)<=0) return;
-    salvarDesperdicio({itemId, nomeItem:item.nome, unidade:item.unidade, quantidade:parseFloat(quantidade), motivo, data:new Date().toISOString()});
+    salvarDesperdicio({itemId, nomeItem:item.nome, unidade:item.unidade, clienteId:item.clienteId||"", quantidade:parseFloat(quantidade), motivo, data:new Date().toISOString()});
     setQuantidade(""); setMotivo("");
   };
 
@@ -1471,22 +1614,8 @@ function Desperdicio({itens, desperdicios, salvarDesperdicio, excluirDesperdicio
 /* ======================================================================
    CONFIGURAÇÕES — perfil e módulos ativos
 ====================================================================== */
-function Configuracoes({usuario, perfil, salvarModulos}){
-  const modulos = perfil.modulos || {clinico:true, uan:false};
-  const [clinico, setClinico] = useState(modulos.clinico);
-  const [uan, setUan] = useState(modulos.uan);
-  const [salvando, setSalvando] = useState(false);
-  const [salvo, setSalvo] = useState(false);
-
-  const salvar = async ()=>{
-    if (!clinico && !uan) return;
-    setSalvando(true);
-    await salvarModulos({clinico, uan});
-    setSalvando(false);
-    setSalvo(true);
-    setTimeout(()=>setSalvo(false), 2000);
-  };
-
+function Configuracoes({usuario, perfil}){
+  const modulos = perfil.modulos || {clinico:false, uan:false};
   return (
     <div className="fade-in max-w-lg space-y-4">
       <div className="kg-card p-5">
@@ -1498,19 +1627,16 @@ function Configuracoes({usuario, perfil, salvarModulos}){
         </div>
       </div>
       <div className="kg-card p-5">
-        <div className="font-semibold mb-3">Módulos ativos</div>
-        <div className="flex gap-2 mb-3">
-          <label className={"flex-1 border rounded-lg px-3 py-3 text-sm cursor-pointer flex items-center gap-2 " + (clinico?"":"text-stone-400")} style={{borderColor: clinico?"var(--gold)":"var(--line)", background: clinico?"#faf6ee":"#fff"}}>
-            <input type="checkbox" checked={clinico} onChange={e=>setClinico(e.target.checked)} />
-            <Icone nome="pacientes" className="w-4 h-4" /> Clínico
-          </label>
-          <label className={"flex-1 border rounded-lg px-3 py-3 text-sm cursor-pointer flex items-center gap-2 " + (uan?"":"text-stone-400")} style={{borderColor: uan?"var(--gold)":"var(--line)", background: uan?"#faf6ee":"#fff"}}>
-            <input type="checkbox" checked={uan} onChange={e=>setUan(e.target.checked)} />
-            <Icone nome="empresa" className="w-4 h-4" /> UAN
-          </label>
+        <div className="font-semibold mb-1">Módulos ativos</div>
+        <div className="text-xs text-stone-400 mb-3">Gerenciado pelo administrador da plataforma — fale com ele pra ativar ou desativar um módulo.</div>
+        <div className="flex gap-2">
+          <div className={"flex-1 border rounded-lg px-3 py-3 text-sm flex items-center gap-2 " + (modulos.clinico?"":"text-stone-400")} style={{borderColor: modulos.clinico?"var(--gold)":"var(--line)", background: modulos.clinico?"#faf6ee":"#fff"}}>
+            <Icone nome="pacientes" className="w-4 h-4" /> Clínico {modulos.clinico ? "· ativo" : "· inativo"}
+          </div>
+          <div className={"flex-1 border rounded-lg px-3 py-3 text-sm flex items-center gap-2 " + (modulos.uan?"":"text-stone-400")} style={{borderColor: modulos.uan?"var(--gold)":"var(--line)", background: modulos.uan?"#faf6ee":"#fff"}}>
+            <Icone nome="empresa" className="w-4 h-4" /> UAN {modulos.uan ? "· ativo" : "· inativo"}
+          </div>
         </div>
-        <button disabled={salvando} className="kg-btn-gold" onClick={salvar}>{salvando?"Salvando...":"Salvar"}</button>
-        {salvo && <span className="text-xs ml-3" style={{color:"var(--good)"}}>Salvo!</span>}
       </div>
     </div>
   );
@@ -1522,30 +1648,45 @@ function Configuracoes({usuario, perfil, salvarModulos}){
 function Admin(){
   const [lista, setLista] = useState([]);
   const [carregando, setCarregando] = useState(true);
-  useEffect(()=>{
+  const carregar = ()=>{
+    setCarregando(true);
     db.collection("nutricionistas").get().then(snap=>{
       setLista(snap.docs.map(d=>({id:d.id, ...d.data()})).sort((a,b)=>(b.criadoEm||"").localeCompare(a.criadoEm||"")));
       setCarregando(false);
     }).catch(e=>{ console.error(e); setCarregando(false); });
-  },[]);
+  };
+  useEffect(carregar,[]);
+
+  const alternarModulo = async (n, modulo)=>{
+    const modulosAtuais = n.modulos || {clinico:false, uan:false};
+    const novosModulos = {...modulosAtuais, [modulo]: !modulosAtuais[modulo]};
+    const {id, ...rest} = n;
+    await db.collection("nutricionistas").doc(n.id).set({...rest, modulos:novosModulos});
+    setLista(prev=>prev.map(x=>x.id===n.id?{...x, modulos:novosModulos}:x));
+  };
 
   return (
     <div className="fade-in kg-card p-4">
       <div className="font-semibold mb-1">Nutricionistas cadastrados</div>
-      <div className="text-xs text-stone-500 mb-4">Cada um só acessa os próprios dados de produtos, fichas técnicas e cardápios. A base de alimentos é compartilhada entre todos. Para desativar ou excluir um login, use o Firebase Console (Authentication) — essa ação exige acesso de administrador do projeto, fora do alcance deste painel.</div>
+      <div className="text-xs text-stone-500 mb-4">Marque quais módulos cada nutricionista pode acessar — é isso que decide o que aparece no menu lateral dele. Cada um só acessa os próprios dados; a base de alimentos é compartilhada entre todos. Para desativar ou excluir um login, use o Firebase Console (Authentication) — fora do alcance deste painel.</div>
       {carregando ? <div className="text-sm text-stone-500">Carregando...</div> : (
         <table className="kg-table">
-          <thead><tr><th>Nome</th><th>CRN</th><th>E-mail</th><th>Desde</th></tr></thead>
+          <thead><tr><th>Nome</th><th>CRN</th><th>E-mail</th><th>Clínico</th><th>UAN</th><th>Desde</th></tr></thead>
           <tbody>
-            {lista.map(n=>(
-              <tr key={n.id}>
-                <td className="font-medium">{n.nome}</td>
-                <td>{n.crn || "—"}</td>
-                <td className="text-stone-500">{n.email}</td>
-                <td className="text-stone-500">{n.criadoEm ? new Date(n.criadoEm).toLocaleDateString("pt-BR") : "—"}</td>
-              </tr>
-            ))}
-            {lista.length===0 && <tr><td colSpan="4" className="text-center text-stone-400 py-6">Nenhum nutricionista cadastrado ainda.</td></tr>}
+            {lista.map(n=>{
+              const modulos = n.modulos || {clinico:false, uan:false};
+              return (
+                <tr key={n.id}>
+                  <td className="font-medium">{n.nome}</td>
+                  <td>{n.crn || "—"}</td>
+                  <td className="text-stone-500">{n.email}</td>
+                  <td><label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={!!modulos.clinico} onChange={()=>alternarModulo(n,"clinico")} /></label></td>
+                  <td><label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={!!modulos.uan} onChange={()=>alternarModulo(n,"uan")} /></label></td>
+                  <td className="text-stone-500">{n.criadoEm ? new Date(n.criadoEm).toLocaleDateString("pt-BR") : "—"}</td>
+                </tr>
+              );
+            })}
+            {lista.length===0 && <tr><td colSpan="6" className="text-center text-stone-400 py-6">Nenhum nutricionista cadastrado ainda.</td></tr>}
           </tbody>
         </table>
       )}
