@@ -1,0 +1,38 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function isAdmin() { return signedIn() && request.auth.token.email == 'joaovitorriaurosa2003@gmail.com'; }
+    function isActive() {
+      return isAdmin() || (signedIn()
+        && exists(/databases/$(database)/documents/nutricionistas/$(request.auth.uid))
+        && get(/databases/$(database)/documents/nutricionistas/$(request.auth.uid)).data.ativo == true);
+    }
+    function owns() { return isActive() && resource.data.donoId == request.auth.uid; }
+    function createsOwn() { return isActive() && request.resource.data.donoId == request.auth.uid; }
+
+    match /nutricionistas/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow list: if isAdmin();
+      allow create: if signedIn() && request.auth.uid == uid
+        && (request.resource.data.ativo == false || isAdmin());
+      allow update: if isAdmin()
+        || (signedIn() && request.auth.uid == uid && request.resource.data.ativo == resource.data.ativo);
+      allow delete: if isAdmin();
+    }
+
+    match /{col}/{id} {
+      allow read, delete: if col in ['cozinhas','ingredientes','receitas','preparacoes','cardapios','estoque','movimentacoes'] && owns();
+      allow create: if col in ['cozinhas','ingredientes','receitas','preparacoes','cardapios','estoque','movimentacoes'] && createsOwn();
+      allow update: if col in ['cozinhas','ingredientes','receitas','preparacoes','cardapios','estoque','movimentacoes'] && owns() && createsOwn();
+    }
+
+    match /publicos/{id} {
+      allow read: if true;
+      allow create: if createsOwn();
+      allow update: if owns() && createsOwn();
+      allow delete: if owns();
+    }
+  }
+}
